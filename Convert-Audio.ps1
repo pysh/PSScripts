@@ -8,6 +8,8 @@ Param (
 #$filterList= @(".mp2", ".mp3", ".mpa", ".ogg", ".opus", ".dts", ".dtshd", ".ac3", ".eac3", ".thd", ".wav")
 $filterList = @(".dts", ".ac3")
 [string]$qaacTVBRQuality = '--tvbr 91'
+[string]$OpusBitrate = "-b:a 128k"
+[string]$OutputCodec = "AAC" # (AAC, Opus)
 [bool]$Normalize  = $true
 #[bool]$isDebug    = $false
 
@@ -20,6 +22,7 @@ $filterList = @(".dts", ".ac3")
 # 2.0   250 Kbps    233 Kbps    216 Kbps    183 Kbps
 # 1.0   125 Kbps    117 Kbps    108 Kbps     91 Kbps
 
+# X:\Apps\_VideoEncoding\StaxRip\Apps\FrameServer\AviSynth\ffmpeg.exe -i "X:\temp\Kaleidoscope.S01E00.Black.2160p_temp\ID1 Russian {HDR}.ac3" -c:a libopus -b:a 128k -af volume=3.1dB -ac 2 -y -hide_banner "X:\temp\Kaleidoscope.S01E00.Black.2160p_temp\ID1 Russian {HDR}_3310543885.opus"
 
 
 Function Execute-Command ($commandTitle, $commandPath, $commandArguments)
@@ -122,51 +125,72 @@ function Convert-File {
                 Write-Host 'Пропускаем нормализацию громкости' -ForegroundColor Yellow
             }
 
+            if ($OutputCodec -eq 'AAC') {
+                <#
+                ---------------------------------------------------------- 
+                Convert to Opus
+                ---------------------------------------------------------- 
+                #>
+                # X:\Apps\_VideoEncoding\StaxRip\Apps\FrameServer\AviSynth\ffmpeg.exe -i "X:\temp\Kaleidoscope.S01E00.Black.2160p_temp\ID1 Russian {HDR}.ac3" -c:a libopus -b:a 128k -af volume=3.1dB -ac 2 -y -hide_banner "X:\temp\Kaleidoscope.S01E00.Black.2160p_temp\ID1 Russian {HDR}_3310543885.opus"
 
-            <#
-            ---------------------------------------------------------- 
-            Convert to FLAC
-            ---------------------------------------------------------- 
-            #>
-            Write-Host 'Converting to FLAC...' -ForegroundColor Yellow -NoNewline
-            $OutputFlac= ("{0}\{1}.{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "flac")
-            $ArgList = @("-i ""$InputFile""", 
-                        $Gain, 
-                        #"-ac 2", 
-                        "-y", "-hide_banner",
-                        """$OutputFlac""")
+                Write-Host ("QAAC {0}.." -f $Gain) -ForegroundColor Yellow -NoNewline
+                $OutputAAC = ("{0}\{1}.{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "opus")
+                $ArgList = @("-i ""$InputFile""", 
+                            "-c:a libopus", 
+                            $OpusBitrate, 
+                            $Gain, 
+                            #"-ac 2", 
+                            "-y", "-hide_banner",
+                            """$OutputAAC""")
 
-            Start-Process -Path $ffmpeg -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" | Out-Null
-            Write-Host "`tOk" -ForegroundColor DarkYellow
-            
-            <#
-            ----------------------------------------------------------
-            Encoding
-            ----------------------------------------------------------
-            #>
-            Write-Host ("QAAC {0}.." -f $Gain) -ForegroundColor Yellow -NoNewline
-            $OutputAAC = ("{0}\{1}.{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "m4a")
-            $ArgList = @($qaacTVBRQuality,  """$OutputFlac""", " -o ""$OutputAAC""")
-
-            Start-Process -Path $qaac -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" | Out-Null
-            Write-Host "`tOk" -ForegroundColor DarkYellow
-
-            <#
-            ----------------------------------------------------------
-            Cleanup
-            ----------------------------------------------------------
-            #>
-            Write-Host 'Cleaning up...' -ForegroundColor Yellow -NoNewline
-            #if (Test-Path -LiteralPath $OutputGain) {Remove-Item -LiteralPath $OutputGain -Force}
-            if (Test-Path -LiteralPath $OutputFlac) {
-                Remove-Item -LiteralPath $OutputFlac -Force
-                if (Test-Path $OutputFlac) {
-                    Write-Host ("`tErr" -f $OutputFlac) -ForegroundColor DarkRed
-                } else {
-                    Write-Host ("`t`tOk" -f $OutputFlac) -ForegroundColor DarkYellow
-                }
+                Start-Process -Path $qaac -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" | Out-Null
+                Write-Host "`tOk" -ForegroundColor DarkYellow
             } else {
-                Write-Host ("`tCan not find file: {0}..." -f $OutputFlac) -NoNewline -ForegroundColor DarkRed
+                <#
+                ---------------------------------------------------------- 
+                Convert to FLAC
+                ---------------------------------------------------------- 
+                #>
+                Write-Host 'Converting to FLAC...' -ForegroundColor Yellow -NoNewline
+                $OutputFlac= ("{0}\{1}.{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "flac")
+                $ArgList = @("-i ""$InputFile""", 
+                            $Gain, 
+                            #"-ac 2", 
+                            "-y", "-hide_banner",
+                            """$OutputFlac""")
+
+                Start-Process -Path $ffmpeg -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" | Out-Null
+                Write-Host "`tOk" -ForegroundColor DarkYellow
+                
+                <#
+                ----------------------------------------------------------
+                Encoding to AAC
+                ----------------------------------------------------------
+                #>
+                Write-Host ("QAAC {0}.." -f $Gain) -ForegroundColor Yellow -NoNewline
+                $OutputAAC = ("{0}\{1}.{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "m4a")
+                $ArgList = @($qaacTVBRQuality,  """$OutputFlac""", " -o ""$OutputAAC""")
+
+                Start-Process -Path $qaac -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" | Out-Null
+                Write-Host "`tOk" -ForegroundColor DarkYellow
+
+                <#
+                ----------------------------------------------------------
+                Cleanup
+                ----------------------------------------------------------
+                #>
+                Write-Host 'Cleaning up...' -ForegroundColor Yellow -NoNewline
+                #if (Test-Path -LiteralPath $OutputGain) {Remove-Item -LiteralPath $OutputGain -Force}
+                if (Test-Path -LiteralPath $OutputFlac) {
+                    Remove-Item -LiteralPath $OutputFlac -Force
+                    if (Test-Path $OutputFlac) {
+                        Write-Host ("`tErr" -f $OutputFlac) -ForegroundColor DarkRed
+                    } else {
+                        Write-Host ("`t`tOk" -f $OutputFlac) -ForegroundColor DarkYellow
+                    }
+                } else {
+                    Write-Host ("`tCan not find file: {0}..." -f $OutputFlac) -NoNewline -ForegroundColor DarkRed
+                }
             }
 
             $fileSizeFrom = ("{0:0.00}" -f ($InputFile.Length/1Mb))
