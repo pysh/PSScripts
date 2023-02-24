@@ -1,5 +1,5 @@
 Param (
-    [System.String]$filePath = 'V:\Сериалы\Зарубежные\Острые Козырьки (Peaky Blinders)\new\season 04 [x265][1080p][BDRip][AlexFilm]\audio_tracks\Original\'
+    [System.String]$filePath = 'W:\.temp\Youtube'
 )
 [datetime]$dtFrom     = Get-Date
 [string]$ffmpeg     = 'X:\Apps\_VideoEncoding\StaxRip\Apps\FrameServer\AviSynth\ffmpeg.exe'
