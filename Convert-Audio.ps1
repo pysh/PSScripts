@@ -2,7 +2,7 @@ Param (
     [System.String]$filePath = 'W:\.temp\Youtube'
 )
 [datetime]$dtFrom     = Get-Date
-[string]$ffmpeg     = 'X:\Apps\_VideoEncoding\StaxRip\Apps\FrameServer\AviSynth\ffmpeg.exe'
+[string]$ffmpeg     = 'X:\Apps\_VideoEncoding\ffmpeg\ffmpeg.exe'
 [string]$qaac       = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Audio\qaac\qaac64.exe'
 
 #$filterList= @(".mp2", ".mp3", ".mpa", ".ogg", ".opus", ".dts", ".dtshd", ".ac3", ".eac3", ".thd", ".wav")
