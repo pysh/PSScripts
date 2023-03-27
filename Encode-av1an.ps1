@@ -2,7 +2,7 @@ Param (
     [String]$InputFileDirName = 'w:\Видео\Сериалы\Отечественные\И снова здравствуйте\И.снова.здравствуйте!.2021.WEB-DL.2160p\', 
     [String]$encoder = 'aom', 
     [String]$targetQuality = '95.3',
-    [System.Diagnostics.Switch]$bRecurse = $true
+    [Switch]$bRecurse = $false
 )
 
 
@@ -171,7 +171,7 @@ function Convert-VideoFile {
 
 $OutputFileDirName= Join-Path -Path $InputFileDirName -ChildPath 'out_[av1an]'
 if (-not (Test-Path -LiteralPath $OutputFileDirName)) { New-Item -Path $OutputFileDirName -ItemType Directory | Out-Null }
-$InputFileList = Get-ChildItem -LiteralPath $InputFileDirName -File -Recurse $bRecurse | Where-Object {(($_.Extension -iin $filterList) -and ($_.BaseName -inotlike '*`[av1an`]*'))}
+$InputFileList = Get-ChildItem -LiteralPath $InputFileDirName -File -Recurse:$bRecurse | Where-Object {(($_.Extension -iin $filterList) -and ($_.BaseName -inotlike '*`[av1an`]*'))}
 Write-Host ("Найдено файлов: {0}" -f $InputFileList.Count) -ForegroundColor Blue
 
 foreach ($InputFileName in $InputFileList) {
