@@ -3,7 +3,7 @@
 Clear-Host
 $ffmpeg = 'X:\Apps\_VideoEncoding\ffmpeg\ffmpeg.exe'
 $InputPath = ('
-W:\.temp\Youtube\[2023-04-18] Ламповый стендап-концерт от комика-миллениала Антона Овчарова\
+    W:\.temp\Youtube\[2023-04-18] Ламповый стендап-концерт от комика-миллениала Антона Овчарова\
 ').Trim()
 
 $InputFilesMask = @("*.webm", "*.mp4")

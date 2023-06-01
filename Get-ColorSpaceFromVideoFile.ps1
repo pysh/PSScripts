@@ -1,6 +1,5 @@
 
 
-
 Function Execute-Command ($commandTitle, $commandPath, $commandArguments) {
     Try {
         $pinfo = New-Object System.Diagnostics.ProcessStartInfo

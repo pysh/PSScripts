@@ -1,6 +1,8 @@
 
 Param (
-    [System.String]$filePath = 'X:\Apps\_VideoEncoding\av1an\logs\[20230524_151235]_t[av1an][rav1e_vmaf-Q95].mkv.log'
+    [System.String]$filePath = ('
+        X:\Apps\_VideoEncoding\av1an\logs\[20230524_151235]_t[av1an][rav1e_vmaf-Q95].mkv.log
+    ').Trim()
 )
 $regexp = '(?:.*chunk )(?<chunk>\d*).*Q=(?<Q>\d*).*VMAF=(?<VMAF>\d*.?\d*)'
 

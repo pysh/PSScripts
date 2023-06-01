@@ -1,5 +1,7 @@
 Param (
-    [System.String]$filePath = 'W:\.temp\Youtube'
+    [System.String]$filePath = ('
+        W:\.temp\Youtube\
+        ').Trim()
 )
 [datetime]$dtFrom     = Get-Date
 [string]$ffmpeg     = 'X:\Apps\_VideoEncoding\ffmpeg\ffmpeg.exe'
