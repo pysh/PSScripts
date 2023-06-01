@@ -1,6 +1,6 @@
 
 Param (
-    [System.String]$filePath = 'X:\Apps\_VideoEncoding\av1an\Fisher.S01.E01.2022.WEB-DL.1080p[av1an][x265_vmaf-Q95.3].mkv.log'
+    [System.String]$filePath = 'X:\Apps\_VideoEncoding\av1an\logs\[20230524_151235]_t[av1an][rav1e_vmaf-Q95].mkv.log'
 )
 $regexp = '(?:.*chunk )(?<chunk>\d*).*Q=(?<Q>\d*).*VMAF=(?<VMAF>\d*.?\d*)'
 
@@ -16,7 +16,7 @@ foreach ($l in $f) {
         [Int32]$Q     = $m.Groups.Item("Q").Value
         [double]$VMAF = $m.Groups.Item("VMAF").Value
         $tbl += @([PSCustomObject]@{Chunk=$chunk; Q=$Q; VMAF=$VMAF})
-        Write-Host ($chunk, $Q, $VMAF -join "`t") -ForegroundColor Blue
+        # Write-Host ($chunk, $Q, $VMAF -join "`t") -ForegroundColor Blue
     }
 }
 
@@ -28,9 +28,9 @@ $tblVMAF = $tbl | Sort-Object Chunk | Group-Object VMAF | Select-Object Count, N
 $tblQ    = $tbl | Sort-Object Chunk | Group-Object Q    | Select-Object Count, Name |  Sort-Object Count, Name -Descending
 
 Write-Host "Group VMAF:" -ForegroundColor DarkYellow
-$tblVMAF | Format-Table
+$tblVMAF | Select-Object -First 10 | Format-Table
 Write-Host "Group Q:" -ForegroundColor DarkMagenta
-$tblQ | Format-Table
+$tblQ | Select-Object -First 10 | Format-Table
 
 
 

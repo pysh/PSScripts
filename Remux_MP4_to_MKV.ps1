@@ -1,8 +1,11 @@
 # Get-Item -LiteralPath ".\05.mkv" -Stream '.gltth'
 
 Clear-Host
-$ffmpeg = 'C:\Users\pauln\AppData\Roaming\FFmpeg\bin\ffmpeg.exe'
-$InputPath = 'w:\.temp\Youtube\'
+$ffmpeg = 'X:\Apps\_VideoEncoding\ffmpeg\ffmpeg.exe'
+$InputPath = ('
+W:\.temp\Youtube\[2023-04-18] Ламповый стендап-концерт от комика-миллениала Антона Овчарова\
+').Trim()
+
 $InputFilesMask = @("*.webm", "*.mp4")
 $OutputPath = '' #'w:\.temp\Youtube\Разгоны_out'
 Write-Host "Scanning the directory for files..."
