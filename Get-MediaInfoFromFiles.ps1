@@ -1,6 +1,8 @@
 
 Add-Type -Path ('c:\Users\pauln\OneDrive\Documents\PowerShell\Modules\Get-MediaInfo\3.7\MediaInfoSharp.dll')
-$file = 'V:\Сериалы\Зарубежные\Потерянная комната (The Lost Room)\Потерянная комната (The Lost Room) (2006 WEB-DL)\The.Lost.Room.S01E03.The.Eye.and.the.Prime.Object.1080p.AMZN.WEB-DL.DD2.0.H.264.Rus.Eng.mkv'
+$file = ('
+V:\Сериалы\Зарубежные\Потерянная комната (The Lost Room)\Потерянная комната (The Lost Room) (2006 WEB-DL)\The.Lost.Room.S01E03.The.Eye.and.the.Prime.Object.1080p.AMZN.WEB-DL.DD2.0.H.264.Rus.Eng.mkv
+').Trim()
 
 
 $mi = New-Object MediaInfoSharp -ArgumentList $file

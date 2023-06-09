@@ -61,15 +61,14 @@ function Get-ColorSpaceFromVideoFile {
             ('-i "{0}"' -f $inFileName)
         )
         $retVal = (Execute-Command -commandTitle 'Get color settings...' -commandPath 'X:\Apps\_VideoEncoding\av1an\ffprobe.exe' -commandArguments ($params -join ' ')).stdout
-        $retVal
         $matchResult = [regex]::Matches($retVal, $RegExp, [Text.RegularExpressions.RegexOptions]::Multiline)
         # Write-Host 'found results: ' $matchResult.Count -ForegroundColor Cyan
         foreach ($m in ($matchResult)) { 
-            if ($m.Groups.Item("color_range").Value -ne '') { [string]$color_range = $m.Groups.Item("color_range").Value }
-            elseif ($m.Groups.Item("color_space").Value -ne '') { [string]$color_space = $m.Groups.Item("color_space").Value }
-            elseif ($m.Groups.Item("color_transfer").Value -ne '') { [string]$color_transfer = $m.Groups.Item("color_transfer").Value }
-            elseif ($m.Groups.Item("color_primaries").Value -ne '') { [string]$color_primaries = $m.Groups.Item("color_primaries").Value }
-            elseif ($m.Groups.Item("color_matrix").Value -ne '') { [string]$color_matrix = $m.Groups.Item("color_matrix").Value }
+            if ($m.Groups.Item("color_range").Value -ne '') { [string]$color_range = $m.Groups.Item("color_range").Value.Trim() }
+            elseif ($m.Groups.Item("color_space").Value -ne '') { [string]$color_space = $m.Groups.Item("color_space").Value.Trim() }
+            elseif ($m.Groups.Item("color_transfer").Value -ne '') { [string]$color_transfer = $m.Groups.Item("color_transfer").Value.Trim() }
+            elseif ($m.Groups.Item("color_primaries").Value -ne '') { [string]$color_primaries = $m.Groups.Item("color_primaries").Value.Trim() }
+            elseif ($m.Groups.Item("color_matrix").Value -ne '') { [string]$color_matrix = $m.Groups.Item("color_matrix").Value.Trim() }
         }
 
         #     () { [string]$color_range     = $m.Groups.Item("color_range").Value }
@@ -91,11 +90,17 @@ function Get-ColorSpaceFromVideoFile {
         color_primaries = $color_primaries; 
         color_matrix    = $color_matrix 
     }
+
+    #$r | Format-List
+    #Write-Host $r -ForegroundColor DarkCyan
     return $r
 }
 
-# $colors = (Get-ColorSpaceFromVideoFile -inFileName ('
-# W:\Видео\Сериалы\Зарубежные\Одни из нас (The Last Of Us)\season 01\The.Last.of.Us.S01E.2160p.HMAX.WEB-DL.x265.HDR.Master5\The.Last.of.Us.S01E09.2160p.HDR.Master5.mkv
-# ').Trim())
 
-# $colors | Format-List
+<# 
+$colors = (Get-ColorSpaceFromVideoFile -inFileName ('
+W:\Видео\Сериалы\Зарубежные\Одни из нас (The Last Of Us)\season 01\The.Last.of.Us.S01E.2160p.HMAX.WEB-DL.x265.HDR.Master5\test\The.Last.of.Us.S01E01_test0.mkv
+').Trim())
+
+$colors | Format-List
+#>

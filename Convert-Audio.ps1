@@ -1,6 +1,6 @@
 Param (
     [System.String]$filePath = ('
-        W:\.temp\Youtube\
+    W:\Видео\Сериалы\Зарубежные\Извне\season 02\From_(s02)_AlexFilm_2160p\audio\_\
         ').Trim()
 )
 [datetime]$dtFrom     = Get-Date
@@ -10,8 +10,8 @@ Param (
 #$filterList= @(".mp2", ".mp3", ".mpa", ".ogg", ".opus", ".dts", ".dtshd", ".ac3", ".eac3", ".thd", ".wav")
 $filterList = @(".dts", ".ac3")
 [string]$qaacTVBRQuality = '--tvbr 91'
-[string]$OpusBitrate = "-b:a 128k"
-[string]$OutputCodec = "AAC" # (AAC, Opus)
+[string]$OpusBitrate = "-b:a 280k"
+[string]$OutputCodec = "Opus" # (AAC, Opus)
 [bool]$Normalize  = $true
 #[bool]$isDebug    = $false
 
@@ -45,7 +45,7 @@ Function Execute-Command ($commandTitle, $commandPath, $commandArguments)
 
         while (-not $p.HasExited) {
             Start-Sleep -Milliseconds 500
-            Write-Host ("...{0}... {1}" -f ($(Get-Date) - $dt1), $p.StandardError.EndOfStream)
+            # Write-Host ("...{0}... {1}" -f ($(Get-Date) - $dt1), $p.StandardError.EndOfStream)
         }
 
         #Write-Host ("process exited in {0}" -f ($(Get-Date) - $dt1)) -ForegroundColor DarkGreen
@@ -127,7 +127,7 @@ function Convert-File {
                 Write-Host 'Пропускаем нормализацию громкости' -ForegroundColor Yellow
             }
 
-            if ($OutputCodec -eq 'AAC') {
+            if ($OutputCodec -eq 'Opus') {
                 <#
                 ---------------------------------------------------------- 
                 Convert to Opus
@@ -135,17 +135,17 @@ function Convert-File {
                 #>
                 # X:\Apps\_VideoEncoding\StaxRip\Apps\FrameServer\AviSynth\ffmpeg.exe -i "X:\temp\Kaleidoscope.S01E00.Black.2160p_temp\ID1 Russian {HDR}.ac3" -c:a libopus -b:a 128k -af volume=3.1dB -ac 2 -y -hide_banner "X:\temp\Kaleidoscope.S01E00.Black.2160p_temp\ID1 Russian {HDR}_3310543885.opus"
 
-                Write-Host ("QAAC {0}.." -f $Gain) -ForegroundColor Yellow -NoNewline
+                Write-Host ("Opus {0}.." -f $Gain) -ForegroundColor Yellow -NoNewline
                 $OutputAAC = ("{0}\{1}.{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "opus")
                 $ArgList = @("-i ""$InputFile""", 
                             "-c:a libopus", 
                             $OpusBitrate, 
                             $Gain, 
-                            #"-ac 2", 
+                            "-ac 6", 
                             "-y", "-hide_banner",
                             """$OutputAAC""")
 
-                Start-Process -Path $qaac -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" | Out-Null
+                Start-Process -Path $ffmpeg -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" #| Out-Null
                 Write-Host "`tOk" -ForegroundColor DarkYellow
             } else {
                 <#
