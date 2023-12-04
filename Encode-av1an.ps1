@@ -1,6 +1,6 @@
 Param (
     [String]$InputFileDirName = ('
-    v:\Сериалы\Отечественные\ЮНОСТЬ\Yunost.S01.WEB-DL.1080p.MrMittens\
+    W:\Видео\Сериалы\Зарубежные\Уэнсдэй (Wednesday)\season 01\Wednesday.S01.2160p\
     ').Trim(), 
     [String]$encoder = 'rav1e', 
     [String]$targetQuality = '95',
@@ -20,7 +20,7 @@ $CommandLineGenerateOnly = $true
 $cqLevel = '30'
 
 $filterList = @(
-    ".mkv", 
+    ".mkv"
     ".mp4", 
     ".vpy"
 )
@@ -31,7 +31,7 @@ switch ($prmAudioChannels) {
         $prmAAC = ''
     }
     2 {
-        $prmLibOpus = "-c:a libopus -b:a 136k -ac 2"
+        $prmLibOpus = "-c:a:0 libopus -b:a:0 135k -ac 2"
         $prmAAC = "-c:a aac -q:a 4 -ac 2" # Stereo ~172kbps
     }
     6 {
@@ -54,10 +54,11 @@ $prmAAC = "ffmpeg -c:a aac -q:a 4 -ac 2" # Stereo ~172kbps
 
 
 $prmRav1e = @(
-    "--speed 5", 
+    "--speed 6", 
     "--quantizer 100", 
     "--threads 8", 
     "--tiles 8", 
+    "--level 5.0",
     # "--primaries BT2020 --transfer BT2020_10Bit --matrix BT2020NCL", 
     # "--primaries BT709 --transfer BT709 --matrix BT709 --range limited", 
     "--no-scene-detection"
@@ -126,25 +127,34 @@ function Convert-VideoFile {
             }) 
         # $prmVideo='', $prmAudio=''
     )
-
     Clear-Variable "color_*"
-    $color_params    = Get-ColorSpaceFromVideoFile -inFileName $InputFileName
-    $color_range     = $color_params.color_range; 
-    $color_space     = $color_params.color_space; 
-    $color_transfer  = $color_params.color_transfer; 
+    $color_params = Get-ColorSpaceFromVideoFile -inFileName $InputFileName
+    # $color_params | Format-List
+    $color_range = $color_params.color_range; 
+    $color_space = $color_params.color_space; 
+    $color_transfer = $color_params.color_transfer; 
     $color_primaries = $color_params.color_primaries; 
-    $color_matrix    = $color_params.color_matrix 
+    #$color_matrix = $color_params.color_matrix 
+    $color_matrix = $(switch ($color_space) {
+        'bt2020nc' { 'BT2020NCL' }
+        Default { $color_space }
+    })
 
+    $prmColors=@()
     # RAV1E Color configuration
     # "--primaries BT2020 --transfer BT2020_10Bit --matrix BT2020NCL", 
     # "--primaries BT709  --transfer BT709        --matrix BT709      --range limited", 
     # if ($color_space -inotin @('','Unknown')) { $prmRav1e += ('--range {0}' -f $color_space) }
-    if ($color_range -eq 'tv') { $prmRav1e += '--range limited' }
-    if ($color_transfer -inotin @('', 'Unknown')) { $prmRav1e += ('--transfer {0}' -f $color_transfer) }
-    if ($color_primaries -inotin @('', 'Unknown')) { $prmRav1e += ('--primaries {0}' -f $color_primaries) }
-    if ($color_space -inotin @('', $null, 'Unknown')) { $prmRav1e += ('--matrix {0}' -f $color_space) }
-    #if ($color_matrix -inotin @('', $null, 'Unknown')) { $prmRav1e += ('--matrix {0}' -f $color_matrix) }
-    $prmRav1e = $prmRav1e.Trim()
+    if ($color_range -eq 'tv') { $prmColors += '--range limited' }
+    if ($color_primaries -inotin @('', 'Unknown')) { $prmColors += ('--primaries {0}' -f $color_primaries) }
+    if ($color_transfer -inotin @('', 'Unknown')) { $prmColors += ('--transfer {0}' -f $color_transfer) }
+    if ($color_matrix -inotin @('', $null, 'Unknown')) { $prmColors += ('--matrix {0}' -f $color_matrix) }
+    # $prmColors += '--mastering-display G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)'
+    # $prmColors += '--content-light 501,235'
+
+    #if ($color_space -inotin @('', $null, 'Unknown')) { $prmColors += ('--matrix {0}' -f $color_space) }
+    #if ($color_matrix -inotin @('', $null, 'Unknown')) { $prmColors += ('--matrix {0}' -f $color_matrix) }
+    # $prmColors = $prmColors.Trim()
 
     if (-not (Test-Path -LiteralPath $OutputFileDirName)) { New-Item -Path $OutputFileDirName -ItemType Directory | Out-Null }
     $InputFile = (Get-Item -LiteralPath $InputFileName)
@@ -157,7 +167,7 @@ function Convert-VideoFile {
         ("-o ""{0}""" -f $OutputFileName), 
         # '--ffmpeg "-vf crop=3840:1608:0:276"', 
         # '--ffmpeg "-vf crop=3840:1600:0:280"', '--vmaf-filter "crop=3840:1600:0:280"', '--vmaf-res "3840x1600"'
-        ("--log-file "".\logs\[{0:yyyyMMdd_HHmmss}]_{1}""" -f (Get-Date), $logFileName), "--log-level DEBUG",
+        ('--log-file ".\logs\[{0:yyyyMMdd_HHmmss}]_{1}"' -f (Get-Date), $logFileName), "--log-level DEBUG",
         "--chunk-method lsmash", 
         "--concat mkvmerge", 
         # "--extra-split 240", 
@@ -167,7 +177,7 @@ function Convert-VideoFile {
         ("--target-quality {0}" -f $targetQuality), 
         # "--probes 6", 
         '--vmaf-path "vmaf_4k_v0.6.1.json"'
-        "--workers 6", 
+        "--workers 4", 
         # "--passes 2", 
         "--resume", 
         "--verbose"
@@ -194,23 +204,23 @@ function Convert-VideoFile {
             # rav1e
             $prmAv1an = @(
                 "--encoder rav1e", 
-                ("--video-params ""{0}""" -f ($prmRav1e -join " ").Trim()), 
+                ('--video-params "{0}"' -f (($prmRav1e.Trim() + $prmColors.Trim()) -join " ")), 
                 ("--audio-params ""{0}""" -f $prmLibOpus)
-                "--min-q=60", "--max-q=180"
+                # "--min-q=60", "--max-q=180"
             ) + $prmCommon
         }
     }
 
-    Write-Host ("@echo {0}" -f $OutputFileName) -ForegroundColor DarkYellow
+    # Write-Host ("@echo {0}" -f $OutputFileName) -ForegroundColor DarkYellow
     if ((Test-Path -LiteralPath $OutputFileName -PathType Leaf) -eq $true) {
-        Write-Host "@REM File exists, skipping..." -ForegroundColor Magenta
+        Write-Host "# File exists, skipping..." -ForegroundColor Magenta
         Return
     }
     else {
-        Write-Host ("""{0}""" -f $execAv1an) -ForegroundColor Cyan -NoNewline
-        Write-Host " " $prmAv1an -ForegroundColor DarkBlue
+        Write-Host ('Set-Location -LiteralPath "{0}\";' -f (Get-Item $execAv1an).Directory) -ForegroundColor Cyan -NoNewline
+        Write-Host (' . .\{0} {1}' -f (Get-Item $execAv1an).Name, ($prmAv1an -join ' ')) -ForegroundColor DarkBlue
         if (-not $CommandLineGenerateOnly) {
-            Start-Process -FilePath $execAv1an -ArgumentList ($prmAv1an -join " ") -Wait -NoNewWindow
+            Start-Process -FilePath $execAv1an -ArgumentList ($prmAv1an -join ' ') -Wait -NoNewWindow
         }
     }
 
@@ -228,5 +238,5 @@ Write-Host ("Найдено файлов: {0}" -f $InputFileList.Count) -Foregro
 
 foreach ($InputFileName in $InputFileList) {
     Convert-VideoFile -InputFileName $InputFileName -OutputFileDirName $OutputDirName -encoder $encoder -targetQuality $targetQuality # -prmVideo $prmX265 -prmAudio $prmAAC
-    Write-Host "@echo = = = = = = = = = = = = = = = = = = = = = = =`r`n" -ForegroundColor Gray
+    Write-Host "# Write-Host = = = = = = = = = = = = = = = = = = = = = = =`r`n" -ForegroundColor Gray
 }

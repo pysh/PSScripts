@@ -7,31 +7,25 @@ txtpur='\e[0;35m' # Purple
 txtcyn='\e[0;36m' # Cyan
 txtwht='\e[0;37m' # White
 txtnc="$(tput sgr0)" # No color
-#txtnc='\033[0m' # No Color
+txtbold="$(tput bold)" # Bold
+txtiton="$(tput sitm)" # Italic ON
+txtitoff="$(tput ritm)" # Italic OFF
 
 current_date_time="`date +%Y%m%d-%H%M`"
 dump_file_name=~/zabbix_dumps/dbdump_zabbix_[$current_date_time].sql
 arch_file_name=~/zabbix_dumps/dbdump_zabbix_[$current_date_time].7z
-#echo -e "${txtylw}Creating mysql dump: $dump_file_name${txtnc}"
+#printf "${txtylw}Creating mysql dump to file: ${txtbold}%s${txtnc}\n" $dump_file_name
 
-echo -e "${txtpur}Stopping zabbix-server...${txtnc}"
+printf "${txtpur}Stopping zabbix-server...${txtnc}\n" $dump_file_name
 systemctl stop zabbix-server
-#systemctl stop zabbix-server && systemctl stop mysqld && systemctl stop nginx
 
-echo -e "${txtylw}Waiting 5 sec...${txtnc}"
-sleep 5
-
-echo -e "${txtgrn}Creating dump file: $dump_file_name...${txtnc}"
+printf "${txtylw}Creating dump to file: ${txtbold}${txtiton}%s${txtnc}\n" $dump_file_name
 mysqldump zabbix > $dump_file_name
 
-echo -e "${txtylw}Waiting 5 sec...${txtnc}"
-sleep 5
+printf "${txtcyn}Restarting daemons...${txtnc}\n"
+systemctl restart nginx && systemctl restart mysqld && systemctl restart zabbix-server
 
-echo -e "${txtcyn}Starting zabbix-server...${txtnc}"
-systemctl restart zabbix-server
-#systemctl start nginx && systemctl start mysqld && systemctl start zabbix-server
-
-echo -e "${txtylw}Compressing dump file: $dump_file_name => $arch_file_name${txtnc}"
+printf "${txtylw}Compressing dump file: ${txtbold}%s${txtnc}\n" $arch_file_name
 7z a -sdel "$arch_file_name" "$dump_file_name"
 
 echo "${txtnc}---"
