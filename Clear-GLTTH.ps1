@@ -2,7 +2,7 @@ Clear-Host
 #$ErrorActionPreference = 'SilentlyContinue'
 [bool]$isTest = $true
 $PSStyle.Progress.View = 'Classic'
-$files = (Get-ChildItem -LiteralPath 'V:\' -Recurse -File)
+$files = (Get-ChildItem -LiteralPath 'f:\Видео\Сериалы\Отечественные\Два холма\' -Recurse -File)
 [Int32]$fc = $files.Count
 [Int32]$c = 0
 $dtFrom = Get-Date
