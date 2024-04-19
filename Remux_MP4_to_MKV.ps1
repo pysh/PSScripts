@@ -1,9 +1,9 @@
 # Get-Item -LiteralPath ".\05.mkv" -Stream '.gltth'
 
 Clear-Host
-$ffmpeg = 'X:\Apps\_VideoEncoding\ffmpeg\ffmpeg.exe'
+$ffmpeg = 'X:\Apps\_VideoEncoding\av1an\ffmpeg.exe'
 $InputPath = ('
-W:\.temp\Youtube\[2023-05-17] Питерский Stand Up #10  Комедия от лучших комиков СПб\
+X:\temp\Youtube\[2023-12-26] КВН  Финал 2023  Ведущий - Леонид Слуцкий  Первая лига\
 ').Trim()
 
 $InputFilesMask = @("*.webm", "*.mp4")
@@ -32,12 +32,26 @@ foreach ($InputMP4 in $InputFileList) {
         #$InputCover = ("{0}\{1}" -f $InputMP4.DirectoryName, "cover.jpg")
         $InputCover = Get-ChildItem -LiteralPath $InputMP4.DirectoryName -File -Filter '*.jpg'
         $InputDescr = Get-ChildItem -LiteralPath $InputMP4.DirectoryName -File -Filter '*description*.txt'
+<# 
         $ArgList = ("-hide_banner", "-i ""$InputMP4""", 
             '-map 0:0 -map 0:1 -map_metadata -1:s:0 -map_metadata 0:g:0 -c copy -metadata:s:a:0 language=ru -metadata:s:v:0 language=rus', 
             "-attach ""$InputCover"" -metadata:s:t:0 mimetype=image/jpeg -metadata:s:t:0 filename=cover.jpg", 
             "-attach ""$InputDescr"" -metadata:s:t:1 mimetype=text/plain -metadata:s:t:1 filename=description.txt", 
             "-y", 
             """$OutputMKV""")
+#>
+        $ArgList = ("-hide_banner", '-y', "-i ""$InputMP4""", 
+        '-map 0', 
+        '-dn',
+        '-ignore_unknown', 
+        '-c copy', 
+        '-metadata:s:a:0 language=rus', 
+        '-metadata:s:v:0 language=rus',  
+        # '-map 0:0 -map 0:1 -map_metadata -1:s:0 -map_metadata 0:g:0 -c copy -metadata:s:a:0 language=ru -metadata:s:v:0 language=rus', 
+        "-attach ""$InputCover"" -metadata:s:t:0 mimetype=image/jpeg -metadata:s:t:0 filename=cover.jpg", 
+        "-attach ""$InputDescr"" -metadata:s:t:1 mimetype=text/plain -metadata:s:t:1 filename=description.txt", 
+        """$OutputMKV""")
+
         #Write-Host "Remuxing file: " -NoNewLine
         Write-Host ("{0}\" -f $OutputPath) -NoNewLine -ForegroundColor Blue
         Write-Host $InputMP4.Name -ForegroundColor DarkBlue

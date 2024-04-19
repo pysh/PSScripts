@@ -6,7 +6,7 @@ $sql = $con.CreateCommand()
 $sql.CommandText = 'SELECT * FROM files WHERE FileName="2x01 Valley of the Shadow [ОРТ]+[ENG].mkv"'
 $sql.CommandType = [System.Data.CommandType]::Text 
 $DBReader = $sql.ExecuteReader()  
-if ($DBReader.HasRows     ) {
+if ($DBReader.HasRows) {
     ForEach ($r in $DBReader) {
         Write-Host $r.Item('FileName')
     }
