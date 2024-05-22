@@ -1,6 +1,6 @@
 Param (
     [String]$InputFileDirName = ('
-    f:\Видео\Сериалы\
+    f:\
     ').Trim(), 
     [array] $filterList = @(
         ".mkv", 
@@ -18,11 +18,33 @@ Param (
 
 # Functions
 
-Function Execute-Command ($commandTitle, $commandPath, $commandArguments) {
+Function Execute-Command ($commandTitle, $commandPath, $commandArguments)
+{
+    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pinfo.FileName = $commandPath
+    $pinfo.RedirectStandardError = $true
+    $pinfo.RedirectStandardOutput = $true
+    $pinfo.UseShellExecute = $false
+    $pinfo.Arguments = $commandArguments
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $pinfo
+    $p.Start() | Out-Null
+    [pscustomobject]@{
+        commandTitle = $commandTitle
+        stdout = $p.StandardOutput.ReadToEnd()
+        stderr = $p.StandardError.ReadToEnd()
+        ExitCode = $p.ExitCode
+    }
+    $p.WaitForExit()
+}
+
+<# 
+Function Execute-Command_OLD ($commandTitle, $commandPath, $commandArguments) {
     Try {
         $pinfo = New-Object System.Diagnostics.ProcessStartInfo
         $pinfo.FileName = $commandPath
         $pinfo.RedirectStandardError = $true
+        $pinfo.RedirectStandardOutput = $true
         $pinfo.RedirectStandardOutput = $true
         $pinfo.UseShellExecute = $false
         # $pinfo.WindowStyle = 'Hidden'
@@ -34,10 +56,10 @@ Function Execute-Command ($commandTitle, $commandPath, $commandArguments) {
 
         # Write-Host $commandPath, $commandArguments -ForegroundColor Magenta
 
-        $p.Start() | Out-Null
+        $p.Start()
 
         while (-not $p.HasExited) {
-            Start-Sleep -Seconds 5
+            Start-Sleep -Seconds 2
             Write-Host ("{0:hh\:mm\:ss}..." -f ($(Get-Date) - $dt1))
         }
 
@@ -60,7 +82,7 @@ Function Execute-Command ($commandTitle, $commandPath, $commandArguments) {
     }
 }
 
-
+#>
 
 
 
@@ -71,23 +93,24 @@ Write-Host ("Найдено файлов: {0}" -f $InputFileList.Count) -Foregro
 
 foreach ($InputFileName in $InputFileList) {
     if (Test-Path ([Management.Automation.WildcardPattern]::Escape($InputFileName)) ) {
+        $prmFFMPEG = ''
         $prmFFMPEG = @(
-            '-hide_banner', 
-            '-xerror', 
-            ('-i "{0}"' -f $InputFileName),
-            '-f null',
-            '-'
+            ("-i ""{0}""" -f $InputFileName),
+            "-hide_banner",
+            "-xerror", 
+            "-f null",
+            "out.null"
         )
 
     }
     Write-Host ("Processing: {0}" -f $InputFileName) -ForegroundColor Blue
     Write-Host ($prmFFMPEG -join ' ') -ForegroundColor Cyan
-    [System.Diagnostics.Process]$retVal = Execute-Command -commandPath $execFFMPEG -commandArguments ($prmFFMPEG -join ' ')
+    $retVal = Execute-Command -commandPath $execFFMPEG -commandArguments ($prmFFMPEG -join ' ')
     switch ($retVal.ExitCode) {
         0 { Write-Host $retVal -ForegroundColor Green }
         Default { Write-Host $retVal.stderr -ForegroundColor Magenta }
     }
-    
+
 }
 
 
