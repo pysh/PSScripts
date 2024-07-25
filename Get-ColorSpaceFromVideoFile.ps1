@@ -69,6 +69,8 @@ function Get-ColorSpaceFromVideoFile {
             elseif ($m.Groups.Item("color_transfer").Value -ne '') { [string]$color_transfer = $m.Groups.Item("color_transfer").Value.Trim() }
             elseif ($m.Groups.Item("color_primaries").Value -ne '') { [string]$color_primaries = $m.Groups.Item("color_primaries").Value.Trim() }
             elseif ($m.Groups.Item("color_matrix").Value -ne '') { [string]$color_matrix = $m.Groups.Item("color_matrix").Value.Trim() }
+            # elseif ($m.Groups.Item("color_matrix").Value -ne '') { [string]$color_matrix = $m.Groups.Item("color_matrix").Value.Trim() }
+
         }
 
         #     () { [string]$color_range     = $m.Groups.Item("color_range").Value }
@@ -97,10 +99,8 @@ function Get-ColorSpaceFromVideoFile {
 }
 
 
-<# 
-$colors = (Get-ColorSpaceFromVideoFile -inFileName ('
-W:\Видео\Сериалы\Зарубежные\Одни из нас (The Last Of Us)\season 01\The.Last.of.Us.S01E.2160p.HMAX.WEB-DL.x265.HDR.Master5\test\The.Last.of.Us.S01E01_test0.mkv
-').Trim())
-
+$file = 'v:\Сериалы\Отечественные\Калимба\[NOOBDL]Калимба.S01.2160p.WEB-DL.x265\out_[SvtAv1EncApp]\Калимба - s01e01 - Серия 1 [2024-05-16][2160p][AV1][WEB-DLRip].mkv'
+$colors = (Get-ColorSpaceFromVideoFile -inFileName $file)
 $colors | Format-List
-#>
+
+Get-MediaInfo -Path $file -Video

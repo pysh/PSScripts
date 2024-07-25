@@ -1,7 +1,7 @@
 Function Get-MI {
     Param (
         [string]$file = ('
-        w:\Видео\Сериалы\Отечественные\Золотое дно\Zolotoe.dno.S01.2024.WEB-DL.2160p.DenSBK\Zolotoe.dno.S01.E01.2024.WEB-DL.2160p.DenSBK.mkv
+        y:\Видео\Сериалы\Зарубежные\Пацаны (The Boys)\The.Boys.2019.S01.2160p.AMZN.WEB-DL.DDP.5.1.HDR.10.Plus.DoVi.P8\The.Boys.2019.S01E01.2160p.AMZN.WEB-DL.DDP.5.1.HDR.10.Plus.DoVi.P8.mp4
     ').Trim()
     )
     . C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\Function_Invoke-Process.ps1

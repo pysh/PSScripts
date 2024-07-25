@@ -6,7 +6,7 @@ Param (
 )
 
 # [System.String]$filePath = ('
-# X:\Apps\_VideoEncoding\av1an\logs\[20240221_163029]_Разгоны #35 [Вова Бухаров, Эльдар Гусейнов, Саша Киселёв, Филипп Воронин, Артём Калантарян] [lpY1KulfuAc][av1an][rav1e_vmaf-Q93].mkv.log.log
+# y:\.temp\Zolotoe.Dno\vpy_dgdecnv\test\Zolotoe.dno.s01e01_test [svt_av1_vmaf93].mkv.log
 # ').Trim()
     
 

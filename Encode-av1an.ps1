@@ -1,6 +1,6 @@
 Param (
     [String]$InputFileDirName = ('
-    Y:\.temp\Zolotoe.Dno\vpy_dgdecnv\
+    y:\Видео\Сериалы\Отечественные\Условный мент\сезон 01\
     ').Trim(), 
     [String]$encoder = 'rav1e', 
     [String]$targetQuality = '93', 
@@ -34,13 +34,20 @@ Clear-Host
 # rav1e
 $CommandLineGenerateOnly = $true
 [String]$encoder = 'rav1e'
-[String]$targetQuality = '95'
-[Int32]$prmAudioChannels = 0
+[String]$targetQuality = '96'
+[Int32]$prmAudioChannels = 6
+[bool]$bAddNoise = $true
 
 # aom
 # $CommandLineGenerateOnly = $true
 # [String]$encoder         = 'aom'
-# [String]$targetQuality   = '93'
+# [String]$targetQuality   = '94'
+# [Int32]$prmAudioChannels = 2
+
+# svt
+# $CommandLineGenerateOnly = $true
+# [String]$encoder = 'svt'
+# [String]$targetQuality = '93'
 # [Int32]$prmAudioChannels = 6
 
 
@@ -54,6 +61,7 @@ enum eEncoder {
     x265
     rav1e
     aom
+    svt
 }
 
 $filterList = @(
@@ -78,11 +86,11 @@ switch ($prmAudioChannels) {
         $prmAAC = ''
     }
     2 {
-        $prmLibOpus = "-c:a:0 libopus -b:a:0 160k -ac 2"
+        $prmLibOpus = "-c:a:0 libopus -b:a:0 214k -ac 2"
         $prmAAC = "-c:a aac -q:a 4 -ac 2" # Stereo ~172kbps
     }
     6 {
-        $prmLibOpus = "-c:a libopus -b:a 320k -ac 6"
+        $prmLibOpus = "-c:a libopus -b:a 350k -ac 6"
         $prmAAC = "-c:a aac -q:a 3" # 5.1 ~516kbps
     }
     Default {
@@ -90,6 +98,14 @@ switch ($prmAudioChannels) {
         $prmAAC = "-c:a aac -q:a 4 -ac 6" # 5.1 ~516kbps
     }
 }
+
+# $prmLibOpus = (@(
+#     "-c:a:0 libopus -af:0 aformat=channel_layouts='7.1|5.1|stereo' -b:a:0 320k -ac:0 6 -disposition:0 0 -metadata:s:a:0 language=ru -metadata:s:a:0 title='[Невафильм DUB | Opus 5.1 Audio]'", 
+#     "-c:a:1 libopus -b:a:1 160k -ac:1 2 -disposition:1 default -metadata:s:a:1 language=ru -metadata:s:a:1 title='[LostFilm MVO | Opus 2.0 Audio]'", 
+#     "-c:a:2 libopus -af:2 aformat=channel_layouts='7.1|5.1|stereo' -b:a:2 320k -ac:2 6 -disposition:2 0 -metadata:s:a:2 language=ru -metadata:s:a:2 title='[HDRezka MVO | Opus 5.1 Audio]'", 
+#     "-c:a:3 libopus -b:a:3 160k -ac:3 2 -disposition:3 0 -metadata:s:a:3 language=ru -metadata:s:a:3 title='[TVShows MVO | Opus 2.0 Audio]'", 
+#     "-c:a:4 libopus -af:4 aformat=channel_layouts='7.1|5.1|stereo' -b:a:4 320k -ac:4 6 -disposition:4 0 -metadata:s:a:4 language=en -metadata:s:a:4 title='[Original | Opus 5.1 Audio]'"
+#     ) -join ' ')
 
 $prmRav1e = @(
     '--speed 6', 
@@ -110,11 +126,19 @@ $prmAOM = @(
     # aomenc-av1 with grain synth and higher efficiency (no anime)
     # https://www.reddit.com/r/AV1/comments/n4si96/encoder_tuning_part_3_av1_grain_synthesis_how_it/
     '--bit-depth=10 --end-usage=q --cq-level=21 --cpu-used=4 --arnr-strength=4',
-    '--tile-columns=1 --tile-rows=0 --lag-in-frames=35 --enable-fwd-kf=1 --kf-max-dist=240', 
-    '--max-partition-size=64 --enable-qm=1 --enable-chroma-deltaq=1 --quant-b-adapt=1 --enable-dnl-denoising=0 --denoise-noise-level=8'
+    '--tile-columns=1 --tile-rows=0 --lag-in-frames=35 --enable-fwd-kf=1 --kf-max-dist=240, --aq-mode=1', 
+    '--max-partition-size=64 --enable-qm=1 --enable-chroma-deltaq=1 --quant-b-adapt=1 --enable-dnl-denoising=0 --denoise-noise-level=5'
 )
 
-$execAv1an = "X:\Apps\_VideoEncoding\av1an\av1an_042++.exe"
+$prmSVT = @(
+    '--rc 0'
+    '--preset 4'
+    '--sharpness 1'
+    '--frame-luma-bias 10'
+    # '-- lp 4'
+)
+
+$execAv1an = "X:\Apps\_VideoEncoding\av1an\av1an++.exe"
 if (!(Test-Path -Path $execAv1an)) {
     Write-Host ("{0} не найден. Проверьте настройки." -f $execAv1an) -ForegroundColor Red
     Exit
@@ -133,6 +157,68 @@ Set-Location (Get-Item -Path $execAv1an).DirectoryName
     ########################
 #>
 
+
+function Get-ColorSpaceParams {
+    param (
+        [eEncoder]$enc,
+        $prm
+    )
+    # svt   color_primaries transfer_characteristics   range   
+    switch ($enc) {
+        svt {
+            $color_primaries = $(switch ($color_params.color_primaries) {
+                    bt709 { '--color-primaries 1' }
+                    bt2020 { '--color-primaries 9' }
+                    bt2021 { '--color-primaries 9' }
+                    Default { '--color-primaries 1' }
+                })
+            $color_transfer = $(switch ($color_params.color_primaries) {
+                    bt709 { '--transfer-characteristics 1' }
+                    smpte2084 { '--transfer-characteristics 16' }
+                    Default { '--transfer-characteristics 1' }
+                })
+            $color_space = $(switch ($prm.color_space) {
+                    bt709 { '--matrix-coefficients 1' }
+                    bt2020 { '--matrix-coefficients 10' }
+                    bt2020cl { '--matrix-coefficients 10' }
+                    bt2020nc { '--matrix-coefficients 9' }
+                    bt2021 { '--matrix-coefficients 9' }
+                    Default { '--matrix-coefficients 1' }
+                })
+
+            $color_range = $(switch ($prm.color_range) {
+                    tv { '--color-range 0' } # Studio (Default)
+                    Default { '--color-range 1' } # Full
+                })
+        }
+        rav1e {
+            $color_primaries = $(switch ($color_params.color_primaries) {
+                    bt709 { '--color-primaries 1' }
+                    bt2020 { '--color-primaries 9' }
+                    bt2021 { '--color-primaries 9' }
+                    Default { '--color-primaries 1' }
+                })
+            $color_transfer = $(switch ($color_params.color_primaries) {
+                    bt709 { '--transfer-characteristics 1' }
+                    smpte2084 { '--transfer-characteristics 16' }
+                    Default { '--transfer-characteristics 1' }
+                })
+            $color_space = $(switch ($prm.color_space) {
+                    bt709 { '--matrix-coefficients 1' }
+                    bt2020nc { '--matrix-coefficients 9' }
+                    bt2021 { '--matrix-coefficients 9' }
+                    Default { '--matrix-coefficients 1' }
+                })
+
+            $color_range = $(switch ($prm.color_range) {
+                    tv { '--color-range 0' } # Studio (Default)
+                    Default { '--color-range 1' } # Full
+                })
+        }
+    }
+
+}
+
 function Convert-VideoFile {
     param (
         $InputFileName, 
@@ -143,6 +229,7 @@ function Convert-VideoFile {
                 rav1e { '100' }
                 aom { '22' }
                 x265 { '23' }
+                svt { '32' }
                 Default { '' }
             })
         # $prmVideo='', $prmAudio=''
@@ -177,7 +264,7 @@ function Convert-VideoFile {
         }
 
         # Декодер
-        if ($mInfo.Format -in @('HEVC', 'AVC')) {
+        if ($mInfo.Format -in @('HEVC_', 'AVC_')) {
             '--chunk-method dgdecnv'
         }
         else {
@@ -190,13 +277,16 @@ function Convert-VideoFile {
             '--vmaf-res iw:ih'
             '--vmaf-version ""vmaf_4k_v0.6.1""'
         }
-        
+        # '--ffmpeg crop=3840:1608'
+        # '--vmaf-filter crop=3840:1608'
+
+
         # Параметры av1an, зависящие от кодека видео
         if ($encoder -eq $([eEncoder]::x265)) {
             '--workers 3'
         }
         else {
-            '--workers 10'
+            '--workers 8'
         }
 
         # Общие параметры av1an
@@ -206,6 +296,28 @@ function Convert-VideoFile {
     )
 
     switch ($encoder) {
+        svt {
+            # SVT-AV1
+            # rav1e color parameters
+            [System.Array]$prmColors = @(
+                # if ($color_range -eq 'tv') { '--range limited' } else { '--range limited' }
+                #switch ($color_primaries)
+                
+                # bt2020
+                if ($color_primaries -inotin @('', $null, 'Unknown')) { ('--primaries {0}' -f $color_primaries) } else { '--color-primaries 1' }
+                
+                #smpte2084
+                if ($color_transfer -inotin @('', $null, 'Unknown')) { ('--transfer {0}' -f $color_transfer) } else { '--transfer-characteristics 1' }
+                
+                # BT2020NCL
+                if ($color_matrix -inotin @('', $null, 'Unknown')) { ('--matrix {0}' -f $color_matrix) } else { '--matrix-coefficients 1' }
+            )
+            $prmAv1an = $prmCommon + @(
+                '--encoder svt-av1'
+                ('--video-params ""{0}""' -f (($prmSVT.Trim() + $prmColors.Trim()) -join " "))
+                ('--audio-params ""{0}""' -f $prmLibOpus)
+            )
+        }
         aom {
             # AOMEnc
             $prmAv1an = $prmCommon + @(
@@ -294,7 +406,7 @@ function Convert-VideoFile {
             ('$tvmaf= [System.IO.Path]::ChangeExtension($tfn2, "json")'),
             ('$osvg = [System.IO.Path]::ChangeExtension($ofn, "svg")'),
             ('$ovmaf= [System.IO.Path]::ChangeExtension($ofn, "json")'),
-            ('$lfn  = ''.\logs\[{0:yyyyMMdd_HHmmss}]_{1}.log'' -f (Get-Date), [System.IO.Path]::GetFileName($ofn)'), 
+            ('$lfn  = ''.\logs\[{0:yyyyMMdd_HHmmss}]_{1}'' -f (Get-Date), [System.IO.Path]::GetFileName($ofn)'), 
             ('$prm  = "-i ""$tfn"" -o ""$tfn2"" -l ""$lfn"" {0}"' -f ($prmAv1an -join ' ')), 
             'Write-Host ("`r`n`r`n")',
             'Write-Host ("[{0}] IN  {1}" -f (Get-Date), $ifn) -ForegroundColor Magenta',
@@ -327,7 +439,7 @@ function Convert-VideoFile {
             # Считаем размеры
             '$s1=(Get-Item -Path $tfn).Length; $s2=(Get-Item -Path $tfn2).Length',
             '$prc=[Math]::Round($s2/$s1*100,2)',
-            'Write-Host ("[{0:n2}] INF {1:n2} Мб  ==>  {2:n2} Мб  =  {3}%" -f (Get-Date), ($s1 /1Mb), ($s2 /1Mb), $prc) -ForegroundColor DarkGreen',
+            'Write-Host ("[{0}] INF {1:n2} Мб  ==>  {2:n2} Мб  =  {3}%" -f (Get-Date), ($s1 /1Mb), ($s2 /1Mb), $prc) -ForegroundColor DarkGreen',
 
             # Перемещаем кодированный файл
             'Write-Host ("[{0}] MOV {1} TO {2}" -f (Get-Date), $tfn2, $ofn) -ForegroundColor Gray',
@@ -461,7 +573,7 @@ else {
 <# Black List
 $prmLibOpus = (@(
     "-c:a:0 libopus -b:a:0 320k -ac:0 6 -disposition:0 0 -metadata:s:a:0 language=en -metadata:s:a:0 title='[Original | Opus 5.1 Audio]'", 
-    "-c:a:1 libopus -b:a:1 320k -ac:1 6 -disposition:1 default -metadata:s:a:1 language=ru -metadata:s:a:1 title='[Lostfilm | Opus 5.1 Audio]'", 
+    "-c:a:1 libopus -b:a:1 320k -ac:1 6 -filter:1 aformat=channel_layouts=5.1 -disposition:1 default -metadata:s:a:1 language=ru -metadata:s:a:1 title='[Lostfilm | Opus 5.1 Audio]'", 
     "-c:a:2 libopus -b:a:2 160k -ac:2 2 -disposition:2 0 -metadata:s:a:2 language=ru -metadata:s:a:2 title='[SET | Opus 2.0 Audio]'"
 ) -join ' ')
 #>
