@@ -62,7 +62,6 @@ enum eEncoder {
     rav1e
     aom
     svt
-    svt
 }
 
 $filterList = @(
@@ -108,14 +107,6 @@ switch ($prmAudioChannels) {
 #     "-c:a:4 libopus -af:4 aformat=channel_layouts='7.1|5.1|stereo' -b:a:4 320k -ac:4 6 -disposition:4 0 -metadata:s:a:4 language=en -metadata:s:a:4 title='[Original | Opus 5.1 Audio]'"
 #     ) -join ' ')
 
-# $prmLibOpus = (@(
-#     "-c:a:0 libopus -af:0 aformat=channel_layouts='7.1|5.1|stereo' -b:a:0 320k -ac:0 6 -disposition:0 0 -metadata:s:a:0 language=ru -metadata:s:a:0 title='[Невафильм DUB | Opus 5.1 Audio]'", 
-#     "-c:a:1 libopus -b:a:1 160k -ac:1 2 -disposition:1 default -metadata:s:a:1 language=ru -metadata:s:a:1 title='[LostFilm MVO | Opus 2.0 Audio]'", 
-#     "-c:a:2 libopus -af:2 aformat=channel_layouts='7.1|5.1|stereo' -b:a:2 320k -ac:2 6 -disposition:2 0 -metadata:s:a:2 language=ru -metadata:s:a:2 title='[HDRezka MVO | Opus 5.1 Audio]'", 
-#     "-c:a:3 libopus -b:a:3 160k -ac:3 2 -disposition:3 0 -metadata:s:a:3 language=ru -metadata:s:a:3 title='[TVShows MVO | Opus 2.0 Audio]'", 
-#     "-c:a:4 libopus -af:4 aformat=channel_layouts='7.1|5.1|stereo' -b:a:4 320k -ac:4 6 -disposition:4 0 -metadata:s:a:4 language=en -metadata:s:a:4 title='[Original | Opus 5.1 Audio]'"
-#     ) -join ' ')
-
 $prmRav1e = @(
     '--speed 6', 
     '--quantizer 93', 
@@ -147,7 +138,6 @@ $prmSVT = @(
     # '-- lp 4'
 )
 
-$execAv1an = "X:\Apps\_VideoEncoding\av1an\av1an++.exe"
 $execAv1an = "X:\Apps\_VideoEncoding\av1an\av1an++.exe"
 if (!(Test-Path -Path $execAv1an)) {
     Write-Host ("{0} не найден. Проверьте настройки." -f $execAv1an) -ForegroundColor Red
@@ -270,11 +260,10 @@ function Convert-VideoFile {
 
         # Добавление шума
         if ($bAddNoise) {
-            '--photon-noise 2', '--chroma-noise'
+            '--photon-noise 4', '--chroma-noise'
         }
 
         # Декодер
-        if ($mInfo.Format -in @('HEVC_', 'AVC_')) {
         if ($mInfo.Format -in @('HEVC_', 'AVC_')) {
             '--chunk-method dgdecnv'
         }
@@ -292,16 +281,11 @@ function Convert-VideoFile {
         # '--vmaf-filter crop=3840:1608'
 
 
-        # '--ffmpeg crop=3840:1608'
-        # '--vmaf-filter crop=3840:1608'
-
-
         # Параметры av1an, зависящие от кодека видео
         if ($encoder -eq $([eEncoder]::x265)) {
             '--workers 3'
         }
         else {
-            '--workers 8'
             '--workers 8'
         }
 
@@ -423,7 +407,6 @@ function Convert-VideoFile {
             ('$osvg = [System.IO.Path]::ChangeExtension($ofn, "svg")'),
             ('$ovmaf= [System.IO.Path]::ChangeExtension($ofn, "json")'),
             ('$lfn  = ''.\logs\[{0:yyyyMMdd_HHmmss}]_{1}'' -f (Get-Date), [System.IO.Path]::GetFileName($ofn)'), 
-            ('$lfn  = ''.\logs\[{0:yyyyMMdd_HHmmss}]_{1}'' -f (Get-Date), [System.IO.Path]::GetFileName($ofn)'), 
             ('$prm  = "-i ""$tfn"" -o ""$tfn2"" -l ""$lfn"" {0}"' -f ($prmAv1an -join ' ')), 
             'Write-Host ("`r`n`r`n")',
             'Write-Host ("[{0}] IN  {1}" -f (Get-Date), $ifn) -ForegroundColor Magenta',
@@ -456,7 +439,6 @@ function Convert-VideoFile {
             # Считаем размеры
             '$s1=(Get-Item -Path $tfn).Length; $s2=(Get-Item -Path $tfn2).Length',
             '$prc=[Math]::Round($s2/$s1*100,2)',
-            'Write-Host ("[{0}] INF {1:n2} Мб  ==>  {2:n2} Мб  =  {3}%" -f (Get-Date), ($s1 /1Mb), ($s2 /1Mb), $prc) -ForegroundColor DarkGreen',
             'Write-Host ("[{0}] INF {1:n2} Мб  ==>  {2:n2} Мб  =  {3}%" -f (Get-Date), ($s1 /1Mb), ($s2 /1Mb), $prc) -ForegroundColor DarkGreen',
 
             # Перемещаем кодированный файл
@@ -591,7 +573,6 @@ else {
 <# Black List
 $prmLibOpus = (@(
     "-c:a:0 libopus -b:a:0 320k -ac:0 6 -disposition:0 0 -metadata:s:a:0 language=en -metadata:s:a:0 title='[Original | Opus 5.1 Audio]'", 
-    "-c:a:1 libopus -b:a:1 320k -ac:1 6 -filter:1 aformat=channel_layouts=5.1 -disposition:1 default -metadata:s:a:1 language=ru -metadata:s:a:1 title='[Lostfilm | Opus 5.1 Audio]'", 
     "-c:a:1 libopus -b:a:1 320k -ac:1 6 -filter:1 aformat=channel_layouts=5.1 -disposition:1 default -metadata:s:a:1 language=ru -metadata:s:a:1 title='[Lostfilm | Opus 5.1 Audio]'", 
     "-c:a:2 libopus -b:a:2 160k -ac:2 2 -disposition:2 0 -metadata:s:a:2 language=ru -metadata:s:a:2 title='[SET | Opus 2.0 Audio]'"
 ) -join ' ')
