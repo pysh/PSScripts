@@ -9,6 +9,12 @@ Param (
 [string]$qaac = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Audio\qaac\qaac64.exe'
 
 . 'C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\Function_Invoke-Process.ps1'
+[datetime]$dtFrom = Get-Date
+[string]$ffmpeg = 'X:\Apps\_VideoEncoding\ffmpeg\ffmpeg.exe'
+[string]$opusenc = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Audio\opus\opusenc.exe'
+[string]$qaac = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Audio\qaac\qaac64.exe'
+
+. 'C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\Function_Invoke-Process.ps1'
 
 #$filterList= @(".mp2", ".mp3", ".mpa", ".ogg", ".opus", ".dts", ".dtshd", ".ac3", ".eac3", ".thd", ".wav")
 $filterList = @(".dts", ".ac3", ".eac3", ".aac") #, ".opus")
@@ -33,6 +39,7 @@ $cmdLinesFlac = @()
 # X:\Apps\_VideoEncoding\StaxRip\Apps\FrameServer\AviSynth\ffmpeg.exe -i "X:\temp\Kaleidoscope.S01E00.Black.2160p_temp\ID1 Russian {HDR}.ac3" -c:a libopus -b:a 128k -af volume=3.1dB -ac 2 -y -hide_banner "X:\temp\Kaleidoscope.S01E00.Black.2160p_temp\ID1 Russian {HDR}_3310543885.opus"
 
 
+<# 
 <# 
 Function Invoke-Cmd ($commandTitle, $commandPath, $commandArguments)
 {
@@ -73,6 +80,7 @@ Function Invoke-Cmd ($commandTitle, $commandPath, $commandArguments)
     }
 }
  #>
+ #>
 
 function Convert-File {
     param (
@@ -95,6 +103,8 @@ function Convert-File {
             Write-Host ("Output file exists, skipping..." -f (Get-Item -LiteralPath $OutputAAC).Name) -ForegroundColor DarkMagenta
         }
         else {
+        }
+        else {
             <#
             ----------------------------------------------------------
             Find gain
@@ -106,12 +116,14 @@ function Convert-File {
                 #$OutputGain = ("{0}\{1}_{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "gain.txt") #.Replace('{','`{').Replace('}','`}')
                 $ArgList = @("-i ""$InputFile""",
                     "-sn", "-vn", "-hide_banner", "-af volumedetect", "-f null NUL")
+                    "-sn", "-vn", "-hide_banner", "-af volumedetect", "-f null NUL")
                 Write-Host 'Volume detecting...' -ForegroundColor Yellow -NoNewline
                 
                 
                 ##$exec = Invoke-Process -FilePath $ffmpeg -ArgumentList ($ArgList -join " ") -DisplayLevel Full
                 #Start-Process -FilePath $ffmpeg -ArgumentList $ArgList -Wait -NoNewWindow # -RedirectStandardError $OutputGain | Out-Null
                 
+                $exec = Invoke-Process -commandTitle "Volumedetect" -commandPath $ffmpeg -commandArguments ($ArgList -join " ")
                 $exec = Invoke-Process -commandTitle "Volumedetect" -commandPath $ffmpeg -commandArguments ($ArgList -join " ")
 
                 #Write-Host $exec.stderr -ForegroundColor Gray
@@ -129,13 +141,32 @@ function Convert-File {
                     Write-Host $exec.stderr -BackgroundColor Red
                     Exit
                 }
+                }
+                [decimal]$GainValueNum = [decimal]$GainValue
+                If ($GainValueNum -ge 15) {
+                    Write-Host ("Gain {0} is too high. Check regex: ""{1}""" -f $GainValue, $RegExp) -BackgroundColor Red
+                    Write-Host $exec.stderr -BackgroundColor Red
+                    Exit
+                }
                 Write-Host ("`t{0}{1}dB" -f $SignValue, $GainValue) -ForegroundColor DarkYellow
+            }
+            else {
             }
             else {
                 $Gain = ''
                 Write-Host 'Пропускаем нормализацию громкости' -ForegroundColor Yellow
             }
 
+            $InputFile.BaseName -match '^.*_{(?<track_title>.*)}_.*'
+            if ($Matches.Count -ge 1) {
+                [string]$track_title = $Matches.track_title
+                if ($track_title -like '`[*`]') {
+                    $track_title = $track_title.Replace('AC3', 'Opus')
+                    $track_title = $track_title.Replace('dts', 'Opus')
+                    $track_title = $track_title.Replace(' _ ', ' | ')
+                }
+            }
+            <#
             $InputFile.BaseName -match '^.*_{(?<track_title>.*)}_.*'
             if ($Matches.Count -ge 1) {
                 [string]$track_title = $Matches.track_title
@@ -177,10 +208,16 @@ function Convert-File {
                             ('--title "{0}"' -f $track_title),
                     """$OutputFlac""", 
                     """$OutputFile""")
+                            ('--title "{0}"' -f $track_title),
+                    """$OutputFlac""", 
+                    """$OutputFile""")
                 Write-Host ("{0} {1}" -f $opusenc, ($ArgList -join " ")) -ForegroundColor Gray
                 Write-Host ("Opus --bitrate {0}..." -f $OpusBitrate) -ForegroundColor Yellow -NoNewline
                 Start-Process -Path $opusenc -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" | Out-Null
+                Start-Process -Path $opusenc -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" | Out-Null
                 Write-Host "`tOk" -ForegroundColor DarkYellow
+            }
+            elseif ($OutputCodec -eq 'AAC') {
             }
             elseif ($OutputCodec -eq 'AAC') {
                 <#
@@ -191,9 +228,12 @@ function Convert-File {
                 Write-Host ("QAAC {0}.." -f $Gain) -ForegroundColor Yellow -NoNewline
                 $OutputFile = ("{0}\{1}.{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "m4a")
                 $ArgList = @($qaacTVBRQuality, """$OutputFlac""", " -o ""$OutputFile""")
+                $ArgList = @($qaacTVBRQuality, """$OutputFlac""", " -o ""$OutputFile""")
 
                 Start-Process -Path $qaac -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" | Out-Null
                 Write-Host "`tOk" -ForegroundColor DarkYellow
+            }
+            elseif ($OutputCodec -in @('none', '', $null)) {
             }
             elseif ($OutputCodec -in @('none', '', $null)) {
                 Write-Host "Пропускаем конвертацию в Opus/AAC" -ForegroundColor DarkMagenta
@@ -220,6 +260,9 @@ function Convert-File {
             $fileSizeFrom = ("{0:0.00}" -f ($InputFile.Length / 1Mb))
             $fileSizeTo = ("{0:0.00}" -f ((Get-Item -LiteralPath $OutputFile).Length / 1Mb))
             Write-Host ("Size: {0} Mb ==> {1} Mb  ( {2:0.00}% )" -f $fileSizeFrom, $fileSizeTo, ($fileSizeTo / $fileSizeFrom * 100)) -ForegroundColor DarkGreen
+            $fileSizeFrom = ("{0:0.00}" -f ($InputFile.Length / 1Mb))
+            $fileSizeTo = ("{0:0.00}" -f ((Get-Item -LiteralPath $OutputFile).Length / 1Mb))
+            Write-Host ("Size: {0} Mb ==> {1} Mb  ( {2:0.00}% )" -f $fileSizeFrom, $fileSizeTo, ($fileSizeTo / $fileSizeFrom * 100)) -ForegroundColor DarkGreen
         }
         Write-Host "=========================================================="
         #Start-Sleep -Seconds 2
@@ -231,6 +274,11 @@ function Convert-File {
 Clear-Host
 $filePath = (Get-Item -LiteralPath $filePath).FullName
 
+$files = Get-ChildItem -LiteralPath $filePath -File -Recurse |
+    Where-Object {
+            ($_.Extension -iin $filterList) -and
+            ($_.BaseName -like $extraFilter)
+    }
 $files = Get-ChildItem -LiteralPath $filePath -File -Recurse |
     Where-Object {
             ($_.Extension -iin $filterList) -and
