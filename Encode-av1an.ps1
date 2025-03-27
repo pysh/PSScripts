@@ -1,92 +1,48 @@
 Param (
     [String]$InputFileDirName = ('
-    y:\Видео\Сериалы\Отечественные\Условный мент\сезон 01\
+    y:\.temp\Сериалы\Зарубежные\Ходячие мертвецы\season 02\test\
     ').Trim(), 
+    [Switch]$bRecurse = $false, 
     [String]$encoder = 'rav1e', 
     [String]$targetQuality = '93', 
     [Int32]$prmAudioChannels = 0, 
-    [Switch]$bRecurse = $false, 
-    [Switch]$CommandLineGenerateOnly = $false
+    [Switch]$CommandLineGenerateOnly = $true
 )
-
-. C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\Get-ColorSpaceFromVideoFile.ps1
-. C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\Get-MediaInfoFromFiles.ps1
-
 
 Clear-Host
 
-<#
-    ########################
-    Override variable values
-    ########################
-#>
+# Load external functions
+. C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\tools.ps1
 
-[string]$cqLevel = '30'
-[bool]$bAddNoise = $false
-[bool]$bWriteScript = $true
-
-# x265
-# $CommandLineGenerateOnly = $true
-# [String]$encoder         = 'x265'
-# [String]$targetQuality   = '92'
-# [Int32]$prmAudioChannels = 0
-
-# rav1e
-$CommandLineGenerateOnly = $true
-[String]$encoder = 'rav1e'
-[String]$targetQuality = '96'
-[Int32]$prmAudioChannels = 6
-[bool]$bAddNoise = $true
-
-# aom
-# $CommandLineGenerateOnly = $true
-# [String]$encoder         = 'aom'
-# [String]$targetQuality   = '94'
-# [Int32]$prmAudioChannels = 2
-
-# svt
-# $CommandLineGenerateOnly = $true
-# [String]$encoder = 'svt'
-# [String]$targetQuality = '93'
-# [Int32]$prmAudioChannels = 6
-
-
-<#  
-    ########################
-    Definitions
-    ########################
-#>
-
-enum eEncoder {
-    x265
-    rav1e
-    aom
-    svt
-}
-
+#Filter settings
 $filterList = @(
-    ".m2ts"
-    ".mkv"
-    ".mp4"
-    ".vpy"
+    ".m2ts", ".mkv", ".mp4", ".vpy"
 )
+$extraFilter = "*"
 
-enum av1anChunkMethod {
-    lsmash
-    ffms2
-    dgdecnv
-    bestsource
-    hybrid
-}
+# Crop parameters
+$crop = @([PSCustomObject]@{
+        crop_left   = 0;
+        crop_right  = 0;
+        crop_top    = 0;
+        crop_bottom = 0;
+        cropping    = $false;
+    }
+)
+[string]$cropPrms = ("crop=in_w-{0}-{1}:in_h-{2}-{3}:{0}:{2}" -f $crop.crop_left, $crop.crop_right, $crop.crop_top, $crop.crop_bottom)
 
-
+# Audio encoder parameters
 switch ($prmAudioChannels) {
+    -1 {
+        $prmLibOpus = '-an'
+        $prmAAC = '-an'
+    }
     0 {
         $prmLibOpus = ''
         $prmAAC = ''
     }
     2 {
-        $prmLibOpus = "-c:a:0 libopus -b:a:0 214k -ac 2"
+        $prmLibOpus = "-c:a:0 libopus -b:a:0 160k -ac 2"
         $prmAAC = "-c:a aac -q:a 4 -ac 2" # Stereo ~172kbps
     }
     6 {
@@ -99,14 +55,40 @@ switch ($prmAudioChannels) {
     }
 }
 
-# $prmLibOpus = (@(
-#     "-c:a:0 libopus -af:0 aformat=channel_layouts='7.1|5.1|stereo' -b:a:0 320k -ac:0 6 -disposition:0 0 -metadata:s:a:0 language=ru -metadata:s:a:0 title='[Невафильм DUB | Opus 5.1 Audio]'", 
-#     "-c:a:1 libopus -b:a:1 160k -ac:1 2 -disposition:1 default -metadata:s:a:1 language=ru -metadata:s:a:1 title='[LostFilm MVO | Opus 2.0 Audio]'", 
-#     "-c:a:2 libopus -af:2 aformat=channel_layouts='7.1|5.1|stereo' -b:a:2 320k -ac:2 6 -disposition:2 0 -metadata:s:a:2 language=ru -metadata:s:a:2 title='[HDRezka MVO | Opus 5.1 Audio]'", 
-#     "-c:a:3 libopus -b:a:3 160k -ac:3 2 -disposition:3 0 -metadata:s:a:3 language=ru -metadata:s:a:3 title='[TVShows MVO | Opus 2.0 Audio]'", 
-#     "-c:a:4 libopus -af:4 aformat=channel_layouts='7.1|5.1|stereo' -b:a:4 320k -ac:4 6 -disposition:4 0 -metadata:s:a:4 language=en -metadata:s:a:4 title='[Original | Opus 5.1 Audio]'"
-#     ) -join ' ')
+# av1an executable path
+$execAv1an = Get-Command av1an.exe -ErrorAction SilentlyContinue
+if (-not $execAv1an) {
+    Write-Host "av1an.exe не найден. Проверьте настройки." -ForegroundColor Red
+    Exit
+}
+Set-Location (Get-Item -Path $execAv1an.Source).DirectoryName
+Write-Host ("Используется {0}." -f $execAv1an.Source) -ForegroundColor Green
 
+
+
+# Video encoder parameters
+enum eEncoder {
+    x265
+    rav1e
+    aom
+    svt
+}
+Enum av1anChunkMethod {
+    lsmash
+    ffms2
+    dgdecnv
+    bestsource
+    hybrid
+}
+[bool]$CommandLineGenerateOnly = $true
+[eEncoder]$encoder = 'rav1e'
+[String]$targetQuality = '91'
+[Int32]$prmAudioChannels = 0
+[string]$cqLevel = '30'
+[bool]$bAddNoise = $true
+[bool]$bWriteScript = $true
+
+# Encoder specific parameters
 $prmRav1e = @(
     '--speed 6', 
     '--quantizer 93', 
@@ -135,264 +117,240 @@ $prmSVT = @(
     '--preset 4'
     '--sharpness 1'
     '--frame-luma-bias 10'
-    # '-- lp 4'
 )
 
-$execAv1an = "X:\Apps\_VideoEncoding\av1an\av1an++.exe"
-if (!(Test-Path -Path $execAv1an)) {
-    Write-Host ("{0} не найден. Проверьте настройки." -f $execAv1an) -ForegroundColor Red
-    Exit
-}
-else {
-    Write-Host ("Используется {0}." -f $execAv1an) -ForegroundColor Green
-}
-Set-Location (Get-Item -Path $execAv1an).DirectoryName
-
-
-
-
-<#  
-    ########################
-    Functions
-    ########################
-#>
-
-
-function Get-ColorSpaceParams {
+function Get-AudioTrackParameters {
     param (
-        [eEncoder]$enc,
-        $prm
+        [Parameter(Mandatory = $true)]
+        [string]$InputFileName
     )
-    # svt   color_primaries transfer_characteristics   range   
-    switch ($enc) {
-        svt {
-            $color_primaries = $(switch ($color_params.color_primaries) {
-                    bt709 { '--color-primaries 1' }
-                    bt2020 { '--color-primaries 9' }
-                    bt2021 { '--color-primaries 9' }
-                    Default { '--color-primaries 1' }
-                })
-            $color_transfer = $(switch ($color_params.color_primaries) {
-                    bt709 { '--transfer-characteristics 1' }
-                    smpte2084 { '--transfer-characteristics 16' }
-                    Default { '--transfer-characteristics 1' }
-                })
-            $color_space = $(switch ($prm.color_space) {
-                    bt709 { '--matrix-coefficients 1' }
-                    bt2020 { '--matrix-coefficients 10' }
-                    bt2020cl { '--matrix-coefficients 10' }
-                    bt2020nc { '--matrix-coefficients 9' }
-                    bt2021 { '--matrix-coefficients 9' }
-                    Default { '--matrix-coefficients 1' }
-                })
 
-            $color_range = $(switch ($prm.color_range) {
-                    tv { '--color-range 0' } # Studio (Default)
-                    Default { '--color-range 1' } # Full
-                })
-        }
-        rav1e {
-            $color_primaries = $(switch ($color_params.color_primaries) {
-                    bt709 { '--color-primaries 1' }
-                    bt2020 { '--color-primaries 9' }
-                    bt2021 { '--color-primaries 9' }
-                    Default { '--color-primaries 1' }
-                })
-            $color_transfer = $(switch ($color_params.color_primaries) {
-                    bt709 { '--transfer-characteristics 1' }
-                    smpte2084 { '--transfer-characteristics 16' }
-                    Default { '--transfer-characteristics 1' }
-                })
-            $color_space = $(switch ($prm.color_space) {
-                    bt709 { '--matrix-coefficients 1' }
-                    bt2020nc { '--matrix-coefficients 9' }
-                    bt2021 { '--matrix-coefficients 9' }
-                    Default { '--matrix-coefficients 1' }
-                })
+    # Используем ffprobe для получения информации о аудиопотоках
+    $audioTracks = ffprobe -v error -select_streams a -show_entries stream=index,codec_name,channels,channel_layout:stream_disposition:stream_tags=language,title -of json $InputFileName | ConvertFrom-Json
 
-            $color_range = $(switch ($prm.color_range) {
-                    tv { '--color-range 0' } # Studio (Default)
-                    Default { '--color-range 1' } # Full
-                })
-        }
+    $prmLibOpus = @()
+    foreach ($track in $audioTracks.streams) {
+        $index = $track.index - 1
+        $language = if ($track.tags.language) { $track.tags.language } else { "und" }
+        $title = if ($track.tags.title) { $track.tags.title } else { "" }
+        $channels = $track.channels
+        $channelsLayout = $track.channel_layout
+        $bitrate = if ($channels -eq 2) { "160k" } else { "320k" }
+        $defaultTrack = if ($track.disposition.default -eq 1) { "default" } else { "0" }
+        [bool]$originalTrack = ($track.disposition.original -eq 1)
+
+        $channelString = @(
+            "-map 0:a:$index"
+            "-c:a:$index libopus"
+            if ($channels -gt 2 -and $channelsLayout -like "*(side)*") { "-af:a:$index aformat=channel_layouts='7.1|5.1|stereo'" }
+            "-b:a:$index $bitrate"
+            "-ac:a:$index $channels"
+            "-disposition:a:$index $defaultTrack"
+            "-metadata:s:a:$index language=$language"
+            "-metadata:s:a:$index title='$title'"
+            if ($title -ne "") {
+                "-metadata:s:a:$index title='$title'"
+            }
+            elseif ($originalTrack) {
+                "-metadata:s:a:$index title='Original Audio'"
+            }
+        ) -join " "
+        $prmLibOpus += $channelString
+        #         $prmLibOpus = (@(
+        #             ('-map 0:a:{0} -c:a:{0} libopus -b:a:{0} 320k -ac:{0} 6 -disposition:{0} default -metadata:s:a:{0} language=ru -metadata:s:a:{0} title="[HDRezka Studio | Opus 5.1 Audio]"' -f '1')
+        #             ('-map 0:a:{0} -c:a:{0} libopus -b:a:{0} 160k -ac:{0} 2 -disposition:{0} 0 -metadata:s:a:{0} language=ru -metadata:s:a:{0} title="[LostFilm | Opus 2.0 Audio]"' -f '2')
+        #             ('-map 0:a:{0} -c:a:{0} libopus -b:a:{0} 320k -ac:{0} 6 -disposition:{0} 0 -metadata:s:a:{0} language=ru -metadata:s:a:{0} title="[TVShows | Opus 5.1 Audio]"' -f '0')
+        #             ('-map 0:a:{0} -c:a:{0} libopus -b:a:{0} 320k -ac:{0} 6 -disposition:{0} 0 -metadata:s:a:{0} language=en -metadata:s:a:{0} title="[Original | Opus 5.1 Audio]"' -f '3')
+        # )
     }
 
+    return $prmLibOpus
 }
 
 function Convert-VideoFile {
+    [CmdletBinding()]
     param (
-        $InputFileName, 
-        $OutputFileDirName = $InputFile.DirectoryName, 
-        $encoder = [eEncoder]::rav1e, 
-        $targetQuality = '92', 
-        $cqLevel = $(switch ($encoder) {
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$InputFileName, # Source video file
+        
+        [Parameter(Mandatory = $false)]
+        [string]$OutputFileDirName, # Output directory (defaults to input directory)
+        
+        [Parameter(Mandatory = $false)]
+        [eEncoder]$encoder = [eEncoder]::rav1e, # Encoder type
+        
+        [Parameter(Mandatory = $false)]
+        [string]$targetQuality = '92', # Target VMAF quality
+        
+        [Parameter(Mandatory = $false)]
+        [string]$cqLevel = $(switch ($encoder) {
+                # Constant quality level per encoder
                 rav1e { '100' }
                 aom { '22' }
                 x265 { '23' }
                 svt { '32' }
                 Default { '' }
             })
-        # $prmVideo='', $prmAudio=''
-    )
-    [System.Array]$strScript = @()
-    [System.Array]$prmColors = @()
-    $mInfo = Get-MI -file $InputFileName
-    Clear-Variable "color_*"
-    $color_params = Get-ColorSpaceFromVideoFile -inFileName $InputFileName
-    $color_range = $color_params.color_range; 
-    $color_space = $color_params.color_space; 
-    $color_transfer = $color_params.color_transfer; 
-    $color_primaries = $color_params.color_primaries; 
-    $color_matrix = $(switch ($color_space) {
-            'bt2020nc' { 'BT2020NCL' }
-            Default { $color_space }
-        })
-
-    if (-not (Test-Path -LiteralPath $OutputFileDirName)) { New-Item -Path $OutputFileDirName -ItemType Directory | Out-Null }
-    $InputFile = (Get-Item -LiteralPath $InputFileName)
-    $OutputFileNameSuffix = ("[av1an][{0}_vmaf-Q{1}]" -f $encoder, $targetQuality)
-    $OutputFileName = (Join-Path -Path $OutputFileDirName -ChildPath ("{0}{1}.mkv" -f $InputFile.BaseName, $OutputFileNameSuffix))
-
-    $prmCommon = @(
-        ("--target-quality {0}" -f $targetQuality)
-        '--concat mkvmerge'
-        '--probes 3'
-
-        # Добавление шума
-        if ($bAddNoise) {
-            '--photon-noise 4', '--chroma-noise'
-        }
-
-        # Декодер
-        if ($mInfo.Format -in @('HEVC_', 'AVC_')) {
-            '--chunk-method dgdecnv'
-        }
-        else {
-            '--chunk-method lsmash'
-        }
-
-        # Параметры av1an, зависящие от разрешения видео
-        if ($mInfo.Height -gt 1080) {
-            # '--vmaf-path ""vmaf_4k_v0.6.1.json""'
-            '--vmaf-res iw:ih'
-            '--vmaf-version ""vmaf_4k_v0.6.1""'
-        }
-        # '--ffmpeg crop=3840:1608'
-        # '--vmaf-filter crop=3840:1608'
-
-
-        # Параметры av1an, зависящие от кодека видео
-        if ($encoder -eq $([eEncoder]::x265)) {
-            '--workers 3'
-        }
-        else {
-            '--workers 8'
-        }
-
-        # Общие параметры av1an
-        '--resume'
-        '--verbose'
-        '--log-level debug'
     )
 
-    switch ($encoder) {
-        svt {
-            # SVT-AV1
-            # rav1e color parameters
-            [System.Array]$prmColors = @(
-                # if ($color_range -eq 'tv') { '--range limited' } else { '--range limited' }
-                #switch ($color_primaries)
-                
-                # bt2020
-                if ($color_primaries -inotin @('', $null, 'Unknown')) { ('--primaries {0}' -f $color_primaries) } else { '--color-primaries 1' }
-                
-                #smpte2084
-                if ($color_transfer -inotin @('', $null, 'Unknown')) { ('--transfer {0}' -f $color_transfer) } else { '--transfer-characteristics 1' }
-                
-                # BT2020NCL
-                if ($color_matrix -inotin @('', $null, 'Unknown')) { ('--matrix {0}' -f $color_matrix) } else { '--matrix-coefficients 1' }
-            )
-            $prmAv1an = $prmCommon + @(
-                '--encoder svt-av1'
-                ('--video-params ""{0}""' -f (($prmSVT.Trim() + $prmColors.Trim()) -join " "))
-                ('--audio-params ""{0}""' -f $prmLibOpus)
-            )
+    begin {
+        [System.Array]$strScript = @()
+        $ColorParameters = Get-VideoColorMappings -VideoPath $InputFileName
+        
+        # Validate input file exists
+        if (-not (Test-Path -LiteralPath $InputFileName)) {
+            throw "Input file not found: $InputFileName"
         }
-        aom {
-            # AOMEnc
-            $prmAv1an = $prmCommon + @(
-                '--encoder aom', 
-                ('--video-params ""{0}""' -f ($prmAOM -join " ")), 
-                ('--audio-params ""{0}""' -f $prmLibOpus)
-            )
+
+        # Set output directory if not specified
+        if (-not $OutputFileDirName) {
+            $OutputFileDirName = Split-Path -Path $InputFileName -Parent
         }
-        x265 {
-            # x265 color parameters
-            [System.Array]$prmColors = @(
-                if ($color_range -eq 'tv') { '--range limited' } else { '--range limited' }
-                if ($color_primaries -inotin @('', $null, 'Unknown')) { ('--colorprim {0}' -f $color_primaries) } else { ('--colorprim bt709') }
-                if ($color_matrix -inotin @('', $null, 'Unknown')) { ('--colormatrix {0}' -f $color_matrix) } else { ('--colormatrix bt709') }
-                if (('--range limited' -in $prmColors) -and
-                    ('--colorprim bt709' -in $prmColors) -and
-                    ('--transfer bt709' -in $prmColors) -and
-                    ('--colormatrix bt709' -in $prmColors)
-                ) {
-                    $prmColors = '--video-signal-type-preset BT709_YCC'
-                }
-            )
-            <#
-            if ($color_range -eq 'tv') { $prmColors += '--range limited' } else { $prmColors += ('--range limited') }
-            if ($color_primaries -inotin @('', $null, 'Unknown')) { $prmColors += ('--colorprim {0}' -f $color_primaries) } else { $prmColors += ('--colorprim bt709') }
-            if ($color_transfer -inotin @('', $null, 'Unknown')) { $prmColors += ('--transfer {0}' -f $color_transfer) } else { $prmColors += ('--transfer bt709') }
-            if ($color_matrix -inotin @('', $null, 'Unknown')) { $prmColors += ('--colormatrix {0}' -f $color_matrix) } else { $prmColors += ('--colormatrix bt709') }
-            if (
-                ('--range limited' -in $prmColors) -and
-                ('--colorprim bt709' -in $prmColors) -and
-                ('--transfer bt709' -in $prmColors) -and
-                ('--colormatrix bt709' -in $prmColors)
-            ) {
-                # BT709_YCC:       --colorprim bt709 --transfer bt709 --colormatrix bt709 --range limited --chromaloc 0
-                $prmColors = '--video-signal-type-preset BT709_YCC'
+    }
+
+    process {
+        # Create output directory if needed
+        if (-not (Test-Path -LiteralPath $OutputFileDirName)) { 
+            New-Item -Path $OutputFileDirName -ItemType Directory | Out-Null 
+        }
+
+        $InputFile = (Get-Item -LiteralPath $InputFileName)
+        $OutputFileNameSuffix = ("[av1an][{0}_vmaf-Q{1}]" -f $encoder, $targetQuality)
+        $OutputFileName = (Join-Path -Path $OutputFileDirName -ChildPath ("{0}{1}.mkv" -f $InputFile.BaseName, $OutputFileNameSuffix))
+
+        # Skip if output exists
+        if (Test-Path -LiteralPath $OutputFileName -PathType Leaf) {
+            Write-Host "# File exists, skipping..." -ForegroundColor Magenta
+            return
+        }
+
+        $prmCommon = @(
+            ("--target-quality {0}" -f $targetQuality)
+            '--concat mkvmerge'
+            '--probes 3'
+            ('--temp ""R:\temp\{0}\{1:yyyyMMdd_HHmmss.fff}""' -f $InputFile.BaseName, $(Get-Date))
+
+            # Добавление шума
+            if ($bAddNoise) {
+                '--photon-noise 4', '--chroma-noise'
             }
-            #>
 
-            $prmAv1an = $prmCommon + @(
-                '--encoder x265'
-                '--min-q=15 --max-q=35'
-                ('--video-params ""{0}""' -f (($prmX265.Trim() + $prmColors.Trim()) -join " "))
-                ('--audio-params ""{0}""' -f $prmAAC)
-            )
+            # Декодер
+            if ($mInfo.Format -in @('HEVC_', 'AVC_')) {
+                '--chunk-method dgdecnv'
+            }
+            else {
+                '--chunk-method lsmash'
+            }
+
+            # Параметры av1an, зависящие от разрешения видео
+            if ($mInfo.Height -gt 1080) {
+                # '--vmaf-path ""vmaf_4k_v0.6.1.json""'
+                '--vmaf-res iw:ih'
+                '--vmaf-version ""vmaf_4k_v0.6.1""'
+            }
+            # Обрезка кадра
+            # if ($cropPrms) {
+            #     ('--ffmpeg ""-vf {0}""' -f $cropPrms)
+            #     ('--vmaf-filter ""{0}""' -f $cropPrms)
+            # }
+
+            # Параметры av1an, зависящие от кодека видео
+            if ($encoder -eq $([eEncoder]::x265)) {
+                '--workers 3'
+            }
+            elseif ($encoder -eq $([eEncoder]::svt)) {
+                '--workers 2'
+            }
+            else {
+                '--workers 8'
+            }
+
+            # Общие параметры av1an
+            '--resume'
+            '--verbose'
+            '--log-level debug'
+        )
+
+        # Build encoder-specific parameters
+        switch ($encoder) {
+            # SVT-AV1 specific parameters
+            svt {
+                # SVT-AV1 color space parameters
+                $prmColors = @(
+                    if ($ColorParameters.Range.svt.Count -gt 0) {
+                        $ColorParameters.Range.svt.param
+                        $ColorParameters.Range.svt.value
+                    }
+                )
+                # Av1an parameters
+                $prmAv1an = $prmCommon + @(
+                    '--encoder svt-av1'
+                    '--min-q=31 --max-q=50'
+                    ('--video-params ""{0}""' -f ($prmSVT + $prmColors -join " "))
+                    ('--audio-params ""{0}""' -f $prmLibOpus)
+                )
+            }
+            # AOM-AV1 specific parameters
+            aom {
+                # aom color space parameters
+                $prmColors = @(
+                    if ($ColorParameters.Range.aomenc.Count -gt 0) {
+                        $ColorParameters.Range.aomenc.param
+                        $ColorParameters.Range.aomenc.value
+                    }
+                )
+                # Av1an parameters
+                $prmAv1an = $prmCommon + @(
+                    '--encoder aom', 
+                    ('--video-params ""{0}""' -f ($prmAOM + $prmColors -join " ")), 
+                    ('--audio-params ""{0}""' -f $prmLibOpus)
+                )
+            }
+            # x265 specific parameters
+            x265 {
+                # x265 color space parameters
+                $prmColors = @(
+                    if ($ColorParameters.Range.x265.Count -gt 0) {
+                        $ColorParameters.Range.x265.param
+                        $ColorParameters.Range.x265.value
+                    }
+                )
+
+                # Av1an parameters
+                $prmAv1an = $prmCommon + @(
+                    '--encoder x265'
+                    '--min-q=15 --max-q=35'
+                    ('--video-params ""{0}""' -f (($prmX265.Trim() + $prmColors.Trim()) -join " "))
+                    ('--audio-params ""{0}""' -f $prmAAC)
+                )
+            }
+            # rav1e specific parameters
+            Default {         
+                # rav1e color space parameters
+                $prmColors = @(
+                    if ($ColorParameters.Range.rav1e.Count -gt 0) {
+                        $ColorParameters.Range.rav1e.param
+                        $ColorParameters.Range.rav1e.value
+                    }
+                )
+                # Av1an parameters
+                $prmAv1an = $prmCommon + @(
+                    '--encoder rav1e'
+                    '--min-q=60 --max-q=150'
+                    ('--video-params ""{0}""' -f ($prmRav1e + $prmColors -join " "))
+                    ('--audio-params ""{0}""' -f $prmLibOpus)
+                )
+            }
         }
-        Default {         
-            # rav1e color parameters
-            [System.Array]$prmColors = @(
-                if ($color_range -eq 'tv') { '--range limited' } else { '--range limited' }
-                if ($color_primaries -inotin @('', $null, 'Unknown')) { ('--primaries {0}' -f $color_primaries) } else { '--primaries BT709' }
-                if ($color_transfer -inotin @('', $null, 'Unknown')) { ('--transfer {0}' -f $color_transfer) } else { '--transfer BT709' }
-                if ($color_matrix -inotin @('', $null, 'Unknown')) { ('--matrix {0}' -f $color_matrix) } else { '--matrix BT709' }
-            )
-            # Video parameters
-            $prmAv1an = $prmCommon + @(
-                '--encoder rav1e'
-                '--min-q=60 --max-q=150'
-                ('--video-params ""{0}""' -f (($prmRav1e.Trim() + $prmColors.Trim()) -join " "))
-                ('--audio-params ""{0}""' -f $prmLibOpus)
-            )
-        }
-    }
 
-    # Write-Host ("@echo {0}" -f $OutputFileName) -ForegroundColor DarkYellow
-
-    if ((Test-Path -LiteralPath $OutputFileName -PathType Leaf) -eq $true) {
-        Write-Host "# File exists, skipping..." -ForegroundColor Magenta
-        Return
-    }
-    else {
-        # Write-Host 'Write-Host "Waiting 60 seconds..." -Foregroundcolor DarkYellow; Start-Sleep -Seconds 60'
+        # Generate script content
         $curDate = (Get-Date)
         [string]$tmpPath = 'Y:\av1an_tmp'
         [string]$tmpFileName = Join-Path -Path $tmpPath -ChildPath ('{0:yyyyMMdd_HHmmss_fff}{1}' -f ($curDate), $InputFileName.Extension)
         [string]$tmpFileName2 = Join-Path -Path $tmpPath -ChildPath ('{0:yyyyMMdd_HHmmss_fff}_out{1}' -f ($curDate), $InputFileName.Extension)
+
         $info = ("[{0}] {1}x{2} @ {3} {4} ({5}, {6} frames)  =  {7:n2} Mb" -f 
             $mInfo.Format, $mInfo.Width, $mInfo.Height, $mInfo.FrameRate, $mInfo.FrameRateMode, $mInfo.Duration, $mInfo.FrameCount, ($InputFileName.Length / 1Mb))
         $strScript += @(
@@ -428,6 +386,7 @@ function Convert-VideoFile {
             'Write-Host ($prm) -ForegroundColor DarkGray',
             
             # Копируем файл во временную директорию
+            'Write-Host ("Копируем файл во временную директорию: {0}" -f $tfn) -ForegroundColor DarkMagenta',
             'Copy-Item -Path ([WildcardPattern]::Escape($ifn)) -Destination ([WildcardPattern]::Escape($tfn)) -Force',
 
             # Переходим в папку с авианом
@@ -462,140 +421,41 @@ function Convert-VideoFile {
         # Write-Host ('Set-Location -LiteralPath "{0}\";' -f (Get-Item $execAv1an).Directory) -ForegroundColor Cyan -NoNewline
         # Write-Host (' . .\{0} {1}' -f (Get-Item $execAv1an).Name, ($prmAv1an -join ' ')) -ForegroundColor DarkBlue
         if (-not $CommandLineGenerateOnly) {
+            # Actually runs the encoding process
             Start-Process -FilePath $execAv1an -ArgumentList ($prmAv1an -join ' ') -Wait -NoNewWindow
         }
+    } end {
+        return $strScript
     }
-    Return $strScript
 } # End Function
-
-
-
 
 
 
 $OutputDirName = Join-Path -Path $InputFileDirName -ChildPath 'out_[av1an]'
 if (-not (Test-Path -LiteralPath $OutputDirName)) { New-Item -Path $OutputDirName -ItemType Directory | Out-Null }
-$InputFileList = Get-ChildItem -LiteralPath $InputFileDirName -File -Recurse:$bRecurse | Where-Object { (($_.Extension -iin $filterList) -and ($_.BaseName -inotlike '*`[av1an`]*')) }
+$InputFileList = Get-ChildItem -LiteralPath $InputFileDirName -File -Recurse:$bRecurse | Where-Object { (($_.Extension -iin $filterList) -and ($_.BaseName -inotlike '*`[av1an`]*') -and ($_.BaseName -like $extraFilter)) }
 Write-Host ("Найдено файлов: {0}" -f $InputFileList.Count) -ForegroundColor Blue
-
 
 Write-Host ("Generating ps1 script...") -ForegroundColor DarkGreen
 $strScript1 = @()
 foreach ($InputFileName in $InputFileList) {
-    <#
-    $s = @(
-        ("`r`n`$fn = '{0}'" -f $InputFileName),
-        'Write-Host ("`r`n[{0}] {1}" -f (Get-Date), $fn) -ForegroundColor DarkMagenta'
-    )
-    Write-Host ($s -join "`r`n")
-    #>
-
+    $prmLibOpus = (Get-AudioTrackParameters -InputFileName $InputFileName) -join ' '
     $strScript1 += Convert-VideoFile -InputFileName $InputFileName -OutputFileDirName $OutputDirName -encoder $encoder -targetQuality $targetQuality # -prmVideo $prmX265 -prmAudio $prmAAC
-
 }
 
 if ($bWriteScript) {
     # Write-Host ($strScript1 -join "`r`n") -ForegroundColor Green
     $striptFileName = (Join-Path -Path $InputFileDirName -ChildPath ('encode_[{0}].ps1' -f $encoder))
     Write-Host ("Writing ps1 script: {0} ... " -f $striptFileName) -ForegroundColor DarkGreen -NoNewline
-    $strScript1 | Out-File -LiteralPath $striptFileName -Encoding utf8 -Force
+    if ($CommandLineGenerateOnly) {
+        $strScript1 | Out-File -LiteralPath $striptFileName -Encoding utf8 -Force
+    }
+    else {
+        Write-Host $strScript1 -ForegroundColor DarkCyan
+    }
     Write-Host ("OK") -ForegroundColor Green
 }
 else {
     Write-Host ("Skip writing ps1 file" -f $striptFileName) -ForegroundColor DarkGreen -NoNewline
     Write-Host ($strScript1) -ForegroundColor Gray
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-<# Обрезка ffmpeg
-
-        # '-i ""$ifn""', 
-        # '-o ""$ofn""', 
-        # '-l ""$lfn""', 
-        
-        #("-i ""{0}""" -f $InputFileName), 
-        #("-o ""{0}""" -f $OutputFileName), 
-        # '--ffmpeg "-vf crop=3840:1608:0:276"', 
-        # '--ffmpeg "-vf crop=3840:1600:0:280"', '--vmaf-filter "crop=3840:1600:0:280"', '--vmaf-res "3840x1600"'
-        # ('--log-file ".\logs\[{0:yyyyMMdd_HHmmss}]_{1}"' -f (Get-Date), $logFileName), "--log-level DEBUG",
-#>
-
-
-
-
-<# Различные параметры кодирования звука
-
-# rav1e
-# $prmLibOpus = '-c:a:0 libopus -b:a:0 280k -c:a:1 libopus -b:a:1 280k -c:a:2 libopus -b:a:2 144k -c:a:3 libopus -b:a:3 144k'
-# $prmLibOpus = '-c:a:0 libopus -b:a:0 320k -ac:0 6 -filter:0 aformat=channel_layouts=5.1 -c:a:1 libopus -b:a:1 320k -ac:1 6 -filter:1 aformat=channel_layouts=5.1 -c:a:2 libopus -b:a:2 160k -c:a:3 libopus -b:a:3 160k'
-# $prmLibOpus = '-c:a:0 copy -c:a:1 libopus -b:a:1 160k'
-
-
-
-
-# $prmLibOpus = '-c:a:1 libopus -b:a:1 320k -ac 6 -c:a:2 libopus -b:a:2 160k -ac 2'
-# # $prmLibOpus = "-c:a:0 libopus -b:a:0 136k -ac 2  -c:a:1 libopus -b:a:1 320k -ac 6  -c:a:2 libopus -b:a:2 320k -ac 6"
-
-# $prmLibOpus = '-c:a:0 copy -c:a:1 libopus -b:a:1 160k'
-
-<# Black List
-$prmLibOpus = (@(
-    "-c:a:0 libopus -b:a:0 320k -ac:0 6 -disposition:0 0 -metadata:s:a:0 language=en -metadata:s:a:0 title='[Original | Opus 5.1 Audio]'", 
-    "-c:a:1 libopus -b:a:1 320k -ac:1 6 -filter:1 aformat=channel_layouts=5.1 -disposition:1 default -metadata:s:a:1 language=ru -metadata:s:a:1 title='[Lostfilm | Opus 5.1 Audio]'", 
-    "-c:a:2 libopus -b:a:2 160k -ac:2 2 -disposition:2 0 -metadata:s:a:2 language=ru -metadata:s:a:2 title='[SET | Opus 2.0 Audio]'"
-) -join ' ')
-#>
-
-<#
-# Fargo
-$prmLibOpus = (@(
-    "-c:a:0 libopus -af:0 aformat=channel_layouts='7.1|5.1|stereo' -b:a:0 320k -ac:0 6 -disposition:0 0 -metadata:s:a:0 language=ru -metadata:s:a:0 title='[LostFilm | Opus 5.1 Audio]'", 
-    "-c:a:1 libopus -af:1 aformat=channel_layouts='7.1|5.1|stereo' -b:a:1 320k -ac:1 6 -disposition:1 default -metadata:s:a:1 language=ru -metadata:s:a:1 title='[Кубик в Кубе | Opus 5.1 Audio]'", 
-    "-c:a:2 libopus -af:2 aformat=channel_layouts='7.1|5.1|stereo' -b:a:2 320k -ac:2 6 -disposition:2 0 -metadata:s:a:2 language=ru -metadata:s:a:2 title='[NewStudio | Opus 5.1 Audio]'", 
-    "-c:a:3 libopus -af:3 aformat=channel_layouts='7.1|5.1|stereo' -b:a:3 320k -ac:3 6 -disposition:3 0 -metadata:s:a:3 language=ru -metadata:s:a:3 title='[Ideafilm | Opus 5.1 Audio]'", 
-    "-c:a:4 libopus -b:a:4 160k -ac:4 2 -disposition:4 0 -metadata:s:a:4 language=ru -metadata:s:a:4 title='[Первый канал | Opus 2.0 Audio]'",
-    "-c:a:5 libopus -af:5 aformat=channel_layouts='7.1|5.1|stereo' -b:a:5 320k -ac:5 6 -disposition:5 0 -metadata:s:a:5 language=en -metadata:s:a:5 title='[Original | Opus 5.1 Audio]'", 
-    "-c:a:6 libopus -b:a:6 160k -ac:6 2 -disposition:6 0 -metadata:s:a:6 language=en -metadata:s:a:6 title='[Commentary | Opus 2.0 Audio]'"
-) -join ' ')
-#>
-
-
-<# $prmLibOpus = "-c:a libopus -b:a 136k -ac 2"
-#$prmLibOpus = "-c:a libopus -b:a 280k -ac 6"
-$prmAAC = "ffmpeg -c:a aac -q:a 4 -ac 2" # Stereo ~172kbps
-#$prmAAC = "ffmpeg -c:a aac -q:a 4 -ac 6" # Stereo ~516kbps #>
-
-
-#>

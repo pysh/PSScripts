@@ -1,85 +1,86 @@
 Param (
-    [System.String]$filePath = ('
-    y:\Video\На автомате\сезон 01\audio\
-        ').Trim()
+    [string]$filePath = 'g:\.temp\StaxRipTemp\Ходячие мертвецы - s05e01 - Убежища нет [2014-10-12][1080p][AVC]_temp\',
+    [string]$OutputDirectory = 'g:\.temp\StaxRipTemp\Ходячие мертвецы - s05e01 - Убежища нет [2014-10-12][1080p][AVC]_temp\'
 )
+
+# Comments
+<#
+QAAC quality
+Ch    q217        q118        q109        q100        q91           q82
+---   --------    --------    --------    --------    --------     --------
+7.1   999 Kbps    933 Kbps    865 Kbps                731 Kbps    
+6.1   875 Kbps    816 Kbps    757 Kbps                639 Kbps    
+5.1   750 Kbps    700 Kbps    649 Kbps    432 Kbps    548 Kbps     384 Kbps
+2.0   250 Kbps    233 Kbps    216 Kbps                183 Kbps    
+1.0   125 Kbps    117 Kbps    108 Kbps                 91 Kbps    
+#>
+
+
+#region Configuration
+# General Settings
 [datetime]$dtFrom = Get-Date
+[string]$OutputCodec = 'AAC' # (AAC, Opus)
+[bool]$Normalize = $false
+[bool]$deleteFlac = $true
+[string]$extraParams = '' #'-itsoffset 5.000' #'-ss 0.000'
+
+# Tools configuration
 [string]$ffmpeg = 'X:\Apps\_VideoEncoding\ffmpeg\ffmpeg.exe'
 [string]$opusenc = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Audio\opus\opusenc.exe'
 [string]$qaac = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Audio\qaac\qaac64.exe'
-
-. 'C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\Function_Invoke-Process.ps1'
-
-#$filterList= @(".mp2", ".mp3", ".mpa", ".ogg", ".opus", ".dts", ".dtshd", ".ac3", ".eac3", ".thd", ".wav")
-$filterList = @(".dts", ".ac3", ".eac3", ".aac") #, ".opus")
-$extraFilter = "*"
-[string]$qaacTVBRQuality = '--tvbr 91'
-[string]$OpusBitrate = "384"
-[string]$OutputCodec = 'Opus' # (AAC, Opus)
-[bool]$Normalize = $false
-[bool]$isDebug    = $true
-[string]$extraParams = '' #'-itsoffset 5.000' #'-ss 0.000'
-$cmdLinesFlac = @()
-
-# QAAC quality
-# Ch    q217        q118        q109        q100        q91           q82
-# ---   --------    --------    --------    --------    --------     --------
-# 7.1   999 Kbps    933 Kbps    865 Kbps                731 Kbps    
-# 6.1   875 Kbps    816 Kbps    757 Kbps                639 Kbps    
-# 5.1   750 Kbps    700 Kbps    649 Kbps    432 Kbps    548 Kbps     384 Kbps
-# 2.0   250 Kbps    233 Kbps    216 Kbps                183 Kbps    
-# 1.0   125 Kbps    117 Kbps    108 Kbps                 91 Kbps    
-
-# X:\Apps\_VideoEncoding\StaxRip\Apps\FrameServer\AviSynth\ffmpeg.exe -i "X:\temp\Kaleidoscope.S01E00.Black.2160p_temp\ID1 Russian {HDR}.ac3" -c:a libopus -b:a 128k -af volume=3.1dB -ac 2 -y -hide_banner "X:\temp\Kaleidoscope.S01E00.Black.2160p_temp\ID1 Russian {HDR}_3310543885.opus"
-
-
-<# 
-Function Invoke-Cmd ($commandTitle, $commandPath, $commandArguments)
-{
-    Try {
-        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pinfo.FileName = $commandPath
-        $pinfo.RedirectStandardError = $true
-        $pinfo.RedirectStandardOutput = $true
-        $pinfo.UseShellExecute = $false
-        $pinfo.WindowStyle = 'Hidden'
-        $pinfo.CreateNoWindow = $true
-        $pinfo.Arguments = $commandArguments
-        $p = New-Object System.Diagnostics.Process
-        $p.StartInfo = $pinfo
-        # $dt1 = Get-Date
-        $p.Start() | Out-Null
-
-        while (-not $p.HasExited) {
-            Start-Sleep -Milliseconds 500
-            # Write-Host ("...{0}... {1}" -f ($(Get-Date) - $dt1), $p.StandardError.EndOfStream)
-        }
-
-        #Write-Host ("process exited in {0}" -f ($(Get-Date) - $dt1)) -ForegroundColor DarkGreen
-        $stdout = $p.StandardOutput.ReadToEnd()
-        $stderr = $p.StandardError.ReadToEnd()
-        $p | Add-Member "commandTitle" $commandTitle
-        $p | Add-Member "stdout" $stdout
-        $p | Add-Member "stderr" $stderr
-        #$stderr | Out-File -LiteralPath $output -Force
-        #$stdout | Out-File -LiteralPath $output -Force -Append
-        #Set-Content -Value @($stderr, $stdout) -LiteralPath $output -Force
-        Return $p
-    }
-    Catch {
-        Write-Host "Error" -BackgroundColor Red
-        Write-Host $PSItem.Exception -BackgroundColor Red
-        Write-Host "Error" -BackgroundColor Red
+$requiredTools = @($ffmpeg, $opusenc, $qaac)
+foreach ($tool in $requiredTools) {
+    if (-not (Test-Path $tool)) {
+        throw "Required tool not found: $tool"
     }
 }
- #>
+
+# Import required functions
+$functionPath = 'C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\Function_Invoke-Process.ps1'
+if (-not (Test-Path $functionPath)) {
+    throw "Required function file not found: $functionPath"
+}
+. $functionPath
+
+
+# Clean up and validate file path
+$filePath = [System.IO.Path]::GetFullPath($filePath.Trim())
+if (-not (Test-Path -LiteralPath $filePath)) {
+    throw "Invalid file path: $filePath"
+}
+
+# Clean up and validate output directory
+$OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory.Trim())
+if (-not (Test-Path $OutputDirectory)) {
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+}
+
+# Filters configuration
+$filterList = @('.ac3', '.eac3', '.mp3', '.wav', '.thd', '.dtshd')
+$extraFilter = '*'
+
+# FLAC Configuration
+$cmdLinesFlac = @()
+
+# AAC Configuration
+[string]$qaacTVBRQuality = '--tvbr 91'
+
+# Opus configuration depend on extraFilter
+[string]$OpusBitrate2ch = "160"
+[string]$OpusBitrate6ch = "384"
+[string]$OpusBitrate = switch -Wildcard ($extraFilter) {
+    '*2Ch*' { $OpusBitrate2ch }
+    '*6Ch*' { $OpusBitrate6ch }
+    default { "250" }
+}
+#endregion
 
 function Convert-File {
     param (
         [array]$InputFileList
     )
     
-    if ($InputFileList -eq '') {
+    if (-not $InputFileList -or $InputFileList.Count -eq 0) {
         Write-Host "Нечего конвертировать" -ForegroundColor DarkRed
         Return $null
     }
@@ -88,7 +89,7 @@ function Convert-File {
     Write-Host '=========================================================='
     foreach ($InputFile in [array]$InputFileList) {
         $n++
-        $OutputAAC = ("{0}\{1}.{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "m4a")
+        $OutputAAC = ("{0}\{1}.{2}" -f $OutputDirectory, $InputFile.BaseName, "m4a")
         Write-Host ("{0}/{1}  {2}" -f $n, $InputFileList.Count, $InputFile.Name) -ForegroundColor Magenta
 
         if (Test-Path -LiteralPath $OutputAAC) {
@@ -136,7 +137,7 @@ function Convert-File {
                 Write-Host 'Пропускаем нормализацию громкости' -ForegroundColor Yellow
             }
 
-            $InputFile.BaseName -match '^.*_{(?<track_title>.*)}_.*'
+            $InputFile.BaseName -match '^.*{(?<track_title>.*)}.*'
             if ($Matches.Count -ge 1) {
                 [string]$track_title = $Matches.track_title
                 if ($track_title -like '`[*`]') {
@@ -150,7 +151,7 @@ function Convert-File {
                 Convert to FLAC
                 ---------------------------------------------------------- 
                 #>
-            $OutputFlac = ("{0}\{1}.{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "flac")
+            $OutputFlac = ("{0}\{1}.{2}" -f $OutputDirectory, $InputFile.BaseName, "flac")
             $ArgList = @(
                 #"-ac 2"
                 "-y", "-hide_banner"
@@ -160,7 +161,7 @@ function Convert-File {
                 """$OutputFlac""")
             #$cmdLinesFlac += ("{0} {1}" -f $ffmpeg, ($ArgList -join " "))
             Write-Host ("{0} {1}" -f $ffmpeg, ($ArgList -join " ")) -ForegroundColor DarkBlue
-            Write-Host 'Converting to FLAC...' -ForegroundColor Yellow
+            Write-Host 'Converting to FLAC...' -ForegroundColor Yellow -NoNewline
             Start-Process -Path $ffmpeg -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" | Out-Null
             Write-Host "`tOk" -ForegroundColor DarkYellow
 
@@ -172,7 +173,7 @@ function Convert-File {
                 Convert to Opus
                 ---------------------------------------------------------- 
                 #>
-                $OutputFile = ("{0}\{1}.{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "opus")
+                $OutputFile = ("{0}\{1}.{2}" -f $OutputDirectory, $InputFile.BaseName, "opus")
                 $ArgList = @( ('--vbr --bitrate {0}' -f $OpusBitrate),
                             ('--title "{0}"' -f $track_title),
                     """$OutputFlac""", 
@@ -188,10 +189,15 @@ function Convert-File {
                 Encoding to AAC
                 ----------------------------------------------------------
                 #>
+                $OutputFile = ("{0}\{1}.{2}" -f $OutputDirectory, $InputFile.BaseName, "m4a")
+                $ArgList = @(
+                    $qaacTVBRQuality, 
+                    ('--title "{0}"' -f $track_title),
+                    """$OutputFlac""",
+                    " -o ""$OutputFile"""
+                )
+                Write-Host ("{0} {1}" -f $qaac, ($ArgList -join " ")) -ForegroundColor DarkBlue
                 Write-Host ("QAAC {0}.." -f $Gain) -ForegroundColor Yellow -NoNewline
-                $OutputFile = ("{0}\{1}.{2}" -f $InputFile.DirectoryName, $InputFile.BaseName, "m4a")
-                $ArgList = @($qaacTVBRQuality, """$OutputFlac""", " -o ""$OutputFile""")
-
                 Start-Process -Path $qaac -ArgumentList $ArgList -Wait -NoNewWindow -RedirectStandardError "NUL" | Out-Null
                 Write-Host "`tOk" -ForegroundColor DarkYellow
             }
@@ -203,23 +209,26 @@ function Convert-File {
             ----------------------------------------------------------
             Cleanup
             ----------------------------------------------------------
+            #>
             Write-Host 'Cleaning up...' -ForegroundColor Yellow -NoNewline
-            #if (Test-Path -LiteralPath $OutputGain) {Remove-Item -LiteralPath $OutputGain -Force}
-            if (Test-Path -LiteralPath $OutputFlac) {
+            # if (Test-Path -LiteralPath $OutputGain) {Remove-Item -LiteralPath $OutputGain -Force}
+            if ($deleteFlac -and (Test-Path -LiteralPath $OutputFlac)) {
                 Remove-Item -LiteralPath $OutputFlac -Force
-                if (Test-Path $OutputFlac) {
+                if (Test-Path -LiteralPath $OutputFlac) {
                     Write-Host ("`tErr" -f $OutputFlac) -ForegroundColor DarkRed
-                } else {
+                }
+                else {
                     Write-Host ("`t`tOk" -f $OutputFlac) -ForegroundColor DarkYellow
                 }
-            } else {
-                Write-Host ("`tCan not find file: {0}..." -f $OutputFlac) -NoNewline -ForegroundColor DarkRed
             }
-            #>
+            else {
+                Write-Host ("`tФайл не найден: {0}..." -f $OutputFlac) -NoNewline -ForegroundColor DarkRed
+            }
+            
 
             $fileSizeFrom = ("{0:0.00}" -f ($InputFile.Length / 1Mb))
             $fileSizeTo = ("{0:0.00}" -f ((Get-Item -LiteralPath $OutputFile).Length / 1Mb))
-            Write-Host ("Size: {0} Mb ==> {1} Mb  ( {2:0.00}% )" -f $fileSizeFrom, $fileSizeTo, ($fileSizeTo / $fileSizeFrom * 100)) -ForegroundColor DarkGreen
+            Write-Host ("Size: {0} Mb ==> {1} Mb  ( {2:0.00}% )" -f $fileSizeFrom, $fileSizeTo, ($fileSizeTo / $fileSizeFrom * 100)) -ForegroundColor Green
         }
         Write-Host "=========================================================="
         #Start-Sleep -Seconds 2
@@ -232,10 +241,10 @@ Clear-Host
 $filePath = (Get-Item -LiteralPath $filePath).FullName
 
 $files = Get-ChildItem -LiteralPath $filePath -File -Recurse |
-    Where-Object {
+Where-Object {
             ($_.Extension -iin $filterList) -and
             ($_.BaseName -like $extraFilter)
-    }
+}
 Write-Host ("Найдено файлов: {0}" -f $files.Count) -ForegroundColor DarkGreen
 
 
@@ -246,6 +255,9 @@ foreach ($f in $files) {
         $FileList += ( Get-Item -LiteralPath $f )
     }
 }
+Write-Host 'Pause 10 sec...'
+Start-Sleep -Seconds 10
+
 Convert-File -InputFileList $FileList
 
 Write-Host ($cmdLinesFlac) -ForegroundColor DarkBlue

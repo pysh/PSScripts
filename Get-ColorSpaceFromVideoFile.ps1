@@ -99,8 +99,8 @@ function Get-ColorSpaceFromVideoFile {
 }
 
 
-$file = 'v:\Сериалы\Отечественные\Калимба\[NOOBDL]Калимба.S01.2160p.WEB-DL.x265\out_[SvtAv1EncApp]\Калимба - s01e01 - Серия 1 [2024-05-16][2160p][AV1][WEB-DLRip].mkv'
-$colors = (Get-ColorSpaceFromVideoFile -inFileName $file)
-$colors | Format-List
+# $file = 'v:\Сериалы\Отечественные\Калимба\[NOOBDL]Калимба.S01.2160p.WEB-DL.x265\out_[SvtAv1EncApp]\Калимба - s01e01 - Серия 1 [2024-05-16][2160p][AV1][WEB-DLRip].mkv'
+# $colors = (Get-ColorSpaceFromVideoFile -inFileName $file)
+# $colors | Format-List
 
-Get-MediaInfo -Path $file -Video
+# Get-MediaInfo -Path $file -Video

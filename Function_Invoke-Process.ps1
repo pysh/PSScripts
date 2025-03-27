@@ -21,7 +21,7 @@ Function Invoke-Process {
         $pinfo.Arguments = $commandArguments
         $p = New-Object System.Diagnostics.Process
         $p.StartInfo = $pinfo
-        $p.Start() | Out-Null
+        $p.Start() #| Out-Null
         [pscustomobject]@{
             commandTitle = $commandTitle
             Command      = $commandPath

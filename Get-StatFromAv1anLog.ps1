@@ -10,7 +10,7 @@ Param (
 # ').Trim()
     
 
-# Clear-Host
+Clear-Host
 [string]$regexp = '(?:.*chunk )(?<chunk>\d*).*Q=(?<Q>\d*).*VMAF=(?<VMAF>\d*.?\d*)'
 
 [array]$f = @(Get-Content -LiteralPath $filePath -Delimiter "`r`n") # | Where-Object {$_ -like '*Target Q=*' })

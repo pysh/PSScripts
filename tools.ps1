@@ -260,6 +260,14 @@ function Get-VMAFValue {
     return [double]$vmaf
 }
 
+function Get-AudioTrackChannels {
+    param([Parameter(Mandatory = $true)][string]$AudioFilePath)
+    $outAudioChannels = & ffprobe -v error -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$AudioFilePath" 2>&1
+    return [Int16]$outAudioChannels
+}
+
+
+
 function Get-VideoStats {
     param([Parameter(Mandatory = $true)][string]$VideoPath)
     
@@ -619,3 +627,103 @@ function Set-VideoTags {
         return $false
     }
 }
+
+
+
+
+
+
+
+function Extract-ZipArchives {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$SourceFolder,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationFolder,
+        
+        [switch]$Overwrite = $false,
+        [switch]$FolderForEachArchive = $false
+    )
+
+    # Validate source folder exists
+    if (-not (Test-Path -Path $SourceFolder -PathType Container)) {
+        Write-Error "Source folder does not exist: $SourceFolder"
+        return
+    }
+
+    # Create destination folder if it doesn't exist
+    if (-not (Test-Path -Path $DestinationFolder)) {
+        try {
+            New-Item -ItemType Directory -Path $DestinationFolder -Force | Out-Null
+        }
+        catch {
+            Write-Error "Could not create destination folder: $_"
+            return
+        }
+    }
+
+    # Load .NET ZIP compression assembly
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+    # Find all ZIP files in the source folder
+    $zipFiles = Get-ChildItem -Path $SourceFolder -Filter *.zip -File
+
+    if ($zipFiles.Count -eq 0) {
+        Write-Warning "No ZIP files found in the source folder."
+        return
+    }
+
+    # Process each ZIP file with progress
+    $totalFiles = $zipFiles.Count
+    $processedFiles = 0
+
+    foreach ($zipFile in $zipFiles) {
+        try {
+            # Update progress
+            $processedFiles++
+            $percentComplete = [math]::Floor(($processedFiles / $totalFiles) * 100)
+            Write-Progress -Activity "Extracting ZIP Archives" `
+                -Status "Processing $($zipFile.Name) ($processedFiles of $totalFiles)" `
+                -PercentComplete $percentComplete
+
+            if ($FolderForEachArchive) {
+                # Create extraction subfolder with ZIP filename (without extension)
+                $extractFolder = Join-Path -Path $DestinationFolder -ChildPath $zipFile.BaseName
+            }
+            else {
+                $extractFolder = $DestinationFolder
+            }
+
+            # Create extraction folder
+            if (-not (Test-Path -Path $extractFolder)) {
+                New-Item -ItemType Directory -Path $extractFolder | Out-Null
+            }
+
+            # Extract ZIP file
+            if ($Overwrite) {
+                # Force overwrite if -Overwrite switch is used
+                [System.IO.Compression.ZipFile]::ExtractToDirectory($zipFile.FullName, $extractFolder, $true)
+            }
+            else {
+                # Default behavior: do not overwrite existing files
+                [System.IO.Compression.ZipFile]::ExtractToDirectory($zipFile.FullName, $extractFolder)
+            }
+
+            # Remove the ZIP file after extraction
+            Remove-Item -LiteralPath $zipFile.FullName -Force
+
+            # Write-Host "Successfully extracted: $($zipFile.Name) to $extractFolder" -ForegroundColor Green
+        }
+        catch {
+            Write-Error "Failed to extract $($zipFile.Name): $_"
+        }
+    }
+
+    # Clear progress bar
+    Write-Progress -Activity "Extracting ZIP Archives" -Completed
+
+    # Write-Host "ZIP extraction completed. Total files processed: $totalFiles" -ForegroundColor Cyan
+}
+
