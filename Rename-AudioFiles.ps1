@@ -1,4 +1,4 @@
-#
+<# #
 $raw = @('from	to
 From.S03E01.Shatter.2160p.AMZN.WEB-D.H.265.RGzsRutracker	Извне - s03e01 - Надлом [2024-09-22]
 From.S03E02.When.We.Go.2160p.AMZN.WEB-DL.H.265.RGzsRutracker	Извне - s03e02 - Когда мы уйдём [2024-09-29]
@@ -31,13 +31,13 @@ foreach ($f in $files) {
 }
 
 
-
+ #>
 
 
 function Create-Symlinks ([string]$strSourcePath, [string]$strDestPath) {
     $files = Get-ChildItem $strSourcePath -Recurse:$false -File:$true
     foreach ($f in $files) {
-        $nn = ("Условный мент s05e{0:00}{1}" -f $f.BaseName.Substring(14,2), $f.Extension)
+        $nn = ("Чужой район s02e{0:00}{1}" -f $f.BaseName.Substring(14,2), $f.Extension)
         $strNewFileName = Join-Path $strDestPath -ChildPath $nn #$f.Name
         Write-Host $f.FullName -ForegroundColor Blue
         Write-Host $strNewFileName -ForegroundColor DarkBlue
@@ -46,5 +46,5 @@ function Create-Symlinks ([string]$strSourcePath, [string]$strDestPath) {
     }
 }
 
-Create-Symlinks -strSourcePath 'v:\Сериалы\Отечественные\Условный мент\Uslovnyj.ment.WEB-DL.(1080p).lunkin\Uslovnyj ment.(5.sezon).WEB-DL.(1080p).lunkin\' `
-                -strDestPath 'y:\.temp\Сериалы\Отечественные\Условный мент\сезон 05\'
+Create-Symlinks -strSourcePath 'v:\Сериалы\Отечественные\Чужой район\Chuzhoj.rajon.WEB-DL.(1080p).lunkin\Chuzhoj.rajon.(2.sezon).WEB-DL.(1080p).lunkin\' `
+                -strDestPath   'g:\Видео\Сериалы\Отечественные\Чужой район\сезон 02\'

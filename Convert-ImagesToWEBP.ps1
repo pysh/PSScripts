@@ -9,10 +9,13 @@ param (
     [int]$Quality = 80
 )
 
+#
+. 'C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\video_tools_AI.ps1'
+
 # Extract archives
 . C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\tools.ps1
-Extract-ZipArchives -SourceFolder 'Z:\www.pornpics.com\' -DestinationFolder 'X:\temp2\xuk\_pronpics_\' -Overwrite:$true -FolderForEachArchive:$true
-Extract-ZipArchives -SourceFolder 'Z:\www.elitebabes.com\' -DestinationFolder 'X:\temp2\xuk\_elitebabes_\' -Overwrite:$true -FolderForEachArchive:$true
+Expand-ZipArchives -SourceFolder 'Z:\www.pornpics.com\' -DestinationFolder 'X:\temp2\xuk\_pronpics_\' -Overwrite -CreateSubfolderForEachArchive
+Expand-ZipArchives -SourceFolder 'Z:\www.elitebabes.com\' -DestinationFolder 'X:\temp2\xuk\_elitebabes_\' -Overwrite -CreateSubfolderForEachArchive
 
 $PSStyle.Progress.View = 'Classic'
 $startTime = Get-Date

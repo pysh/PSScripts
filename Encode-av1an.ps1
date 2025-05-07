@@ -1,11 +1,11 @@
 Param (
     [String]$InputFileDirName = ('
-    y:\.temp\Сериалы\Зарубежные\Ходячие мертвецы\season 02\test\
+    r:\Temp\1\
     ').Trim(), 
     [Switch]$bRecurse = $false, 
-    [String]$encoder = 'rav1e', 
-    [String]$targetQuality = '93', 
-    [Int32]$prmAudioChannels = 0, 
+    [String]$encoder = 'svt', 
+    [String]$targetQuality = '96', 
+    [Int32]$prmAudioChannels = -1, 
     [Switch]$CommandLineGenerateOnly = $true
 )
 
@@ -26,10 +26,16 @@ $crop = @([PSCustomObject]@{
         crop_right  = 0;
         crop_top    = 0;
         crop_bottom = 0;
-        cropping    = $false;
+        cropping    = $true;
     }
 )
-[string]$cropPrms = ("crop=in_w-{0}-{1}:in_h-{2}-{3}:{0}:{2}" -f $crop.crop_left, $crop.crop_right, $crop.crop_top, $crop.crop_bottom)
+
+[string]$cropPrms = if ($crop.cropping) {("crop=in_w-{0}-{1}:in_h-{2}-{3}:{0}:{2}" -f $crop.crop_left, $crop.crop_right, $crop.crop_top, $crop.crop_bottom)} else {$null}
+# $in_w=3840
+# $in_h=2160
+# $($in_w-$crop.crop_left-$crop.crop_right):$($in_h-$crop.crop_top-$crop.crop_bottom):$($crop.crop_left):$($crop.crop_top)"
+
+
 
 # Audio encoder parameters
 switch ($prmAudioChannels) {
@@ -81,20 +87,17 @@ Enum av1anChunkMethod {
     hybrid
 }
 [bool]$CommandLineGenerateOnly = $true
-[eEncoder]$encoder = 'rav1e'
-[String]$targetQuality = '91'
-[Int32]$prmAudioChannels = 0
+[eEncoder]$encoder = 'svt'
+[String]$targetQuality = '96'
+[Int32]$prmAudioChannels = 2
 [string]$cqLevel = '30'
-[bool]$bAddNoise = $true
+[bool]$bAddNoise = $false
 [bool]$bWriteScript = $true
 
 # Encoder specific parameters
 $prmRav1e = @(
     '--speed 6', 
     '--quantizer 93', 
-    # '--threads 8', 
-    # '--tiles 4', 
-    # '--level 5.0',
     '--no-scene-detection'
 )
 
@@ -108,17 +111,20 @@ $prmAOM = @(
     # aomenc-av1 with grain synth and higher efficiency (no anime)
     # https://www.reddit.com/r/AV1/comments/n4si96/encoder_tuning_part_3_av1_grain_synthesis_how_it/
     '--bit-depth=10 --end-usage=q --cq-level=21 --cpu-used=4 --arnr-strength=4',
-    '--tile-columns=1 --tile-rows=0 --lag-in-frames=35 --enable-fwd-kf=1 --kf-max-dist=240, --aq-mode=1', 
+    '--tile-columns=1 --tile-rows=0 --lag-in-frames=35 --enable-fwd-kf=1 --kf-max-dist=240 --aq-mode=1', 
     '--max-partition-size=64 --enable-qm=1 --enable-chroma-deltaq=1 --quant-b-adapt=1 --enable-dnl-denoising=0 --denoise-noise-level=5'
 )
 
 $prmSVT = @(
     '--rc 0'
     '--preset 4'
-    '--sharpness 1'
-    '--frame-luma-bias 10'
+    '--progress 3'
+    '--hbd-mds 2'
+    #'--sharpness 1'
+    #'--frame-luma-bias 10'
 )
 
+<# 
 function Get-AudioTrackParameters {
     param (
         [Parameter(Mandatory = $true)]
@@ -126,7 +132,10 @@ function Get-AudioTrackParameters {
     )
 
     # Используем ffprobe для получения информации о аудиопотоках
+    $outputEncoding = [console]::OutputEncoding
+    [console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $audioTracks = ffprobe -v error -select_streams a -show_entries stream=index,codec_name,channels,channel_layout:stream_disposition:stream_tags=language,title -of json $InputFileName | ConvertFrom-Json
+    [console]::OutputEncoding = $outputEncoding
 
     $prmLibOpus = @()
     foreach ($track in $audioTracks.streams) {
@@ -166,7 +175,7 @@ function Get-AudioTrackParameters {
 
     return $prmLibOpus
 }
-
+#>
 function Convert-VideoFile {
     [CmdletBinding()]
     param (
@@ -225,11 +234,13 @@ function Convert-VideoFile {
             return
         }
 
+        $mInfo = Get-VideoStats2 -VideoPath $InputFile
+
         $prmCommon = @(
             ("--target-quality {0}" -f $targetQuality)
             '--concat mkvmerge'
-            '--probes 3'
-            ('--temp ""R:\temp\{0}\{1:yyyyMMdd_HHmmss.fff}""' -f $InputFile.BaseName, $(Get-Date))
+            # '--probes 3'
+            #('--temp ""R:\temp\{0}\{1:yyyyMMdd_HHmmss.fff}""' -f $InputFile.BaseName, $(Get-Date))
 
             # Добавление шума
             if ($bAddNoise) {
@@ -237,7 +248,7 @@ function Convert-VideoFile {
             }
 
             # Декодер
-            if ($mInfo.Format -in @('HEVC_', 'AVC_')) {
+            if ($mInfo.codec_name -in @('hevc', 'avc')) {
                 '--chunk-method dgdecnv'
             }
             else {
@@ -245,16 +256,16 @@ function Convert-VideoFile {
             }
 
             # Параметры av1an, зависящие от разрешения видео
-            if ($mInfo.Height -gt 1080) {
-                # '--vmaf-path ""vmaf_4k_v0.6.1.json""'
+            if ($mInfo.height -gt 1080) {
+                '--vmaf-path ""vmaf_4k_v0.6.1.json""'
                 '--vmaf-res iw:ih'
-                '--vmaf-version ""vmaf_4k_v0.6.1""'
+                # '--vmaf-version ""vmaf_4k_v0.6.1""'
             }
             # Обрезка кадра
-            # if ($cropPrms) {
-            #     ('--ffmpeg ""-vf {0}""' -f $cropPrms)
-            #     ('--vmaf-filter ""{0}""' -f $cropPrms)
-            # }
+            if ($cropPrms) {
+                ('--ffmpeg ""-vf {0}""' -f $cropPrms)
+                ('--vmaf-filter ""{0}""' -f $cropPrms)
+            }
 
             # Параметры av1an, зависящие от кодека видео
             if ($encoder -eq $([eEncoder]::x265)) {
@@ -348,11 +359,11 @@ function Convert-VideoFile {
         # Generate script content
         $curDate = (Get-Date)
         [string]$tmpPath = 'Y:\av1an_tmp'
-        [string]$tmpFileName = Join-Path -Path $tmpPath -ChildPath ('{0:yyyyMMdd_HHmmss_fff}{1}' -f ($curDate), $InputFileName.Extension)
-        [string]$tmpFileName2 = Join-Path -Path $tmpPath -ChildPath ('{0:yyyyMMdd_HHmmss_fff}_out{1}' -f ($curDate), $InputFileName.Extension)
+        [string]$tmpFileName = Join-Path -Path $tmpPath -ChildPath ('{0:yyyyMMdd_HHmmss_fff}{1}' -f ($curDate), [system.io.path]::GetExtension($InputFileName))
+        [string]$tmpFileName2 = Join-Path -Path $tmpPath -ChildPath ('{0:yyyyMMdd_HHmmss_fff}_out{1}' -f ($curDate), [system.io.path]::GetExtension($InputFileName))
 
-        $info = ("[{0}] {1}x{2} @ {3} {4} ({5}, {6} frames)  =  {7:n2} Mb" -f 
-            $mInfo.Format, $mInfo.Width, $mInfo.Height, $mInfo.FrameRate, $mInfo.FrameRateMode, $mInfo.Duration, $mInfo.FrameCount, ($InputFileName.Length / 1Mb))
+        $info = ("[{0}] {1}x{2} @ {3} fps, {4}, {5} frames  =  {6:n2} Mb" -f 
+            $mInfo.codec_name, $mInfo.width, $mInfo.height, $mInfo.FPS, $mInfo.Duration, $mInfo.Frames, ($mInfo.Size / 1Mb))
         $strScript += @(
             '', 
             # Присваиваем переменные
@@ -415,11 +426,6 @@ function Convert-VideoFile {
             'Remove-Item -Path ([WildcardPattern]::Escape($tfn))',
             '}'
         )
-        # $strScript += ('Set-Location -LiteralPath "{0}\";' -f (Get-Item $execAv1an).Directory)
-        # $strScript += ('. .\{0} {1}' -f (Get-Item $execAv1an).Name, ($prmAv1an -join ' '))
-        # Write-Host $strScript -ForegroundColor DarkBlue
-        # Write-Host ('Set-Location -LiteralPath "{0}\";' -f (Get-Item $execAv1an).Directory) -ForegroundColor Cyan -NoNewline
-        # Write-Host (' . .\{0} {1}' -f (Get-Item $execAv1an).Name, ($prmAv1an -join ' ')) -ForegroundColor DarkBlue
         if (-not $CommandLineGenerateOnly) {
             # Actually runs the encoding process
             Start-Process -FilePath $execAv1an -ArgumentList ($prmAv1an -join ' ') -Wait -NoNewWindow
@@ -439,7 +445,12 @@ Write-Host ("Найдено файлов: {0}" -f $InputFileList.Count) -Foregro
 Write-Host ("Generating ps1 script...") -ForegroundColor DarkGreen
 $strScript1 = @()
 foreach ($InputFileName in $InputFileList) {
-    $prmLibOpus = (Get-AudioTrackParameters -InputFileName $InputFileName) -join ' '
+    if ($prmAudioChannels -eq -1) {
+        $prmLibOpus = ''
+    } else {
+        # $prmLibOpus = (Get-AudioTrackParameters -InputFileName $InputFileName) -join ' '
+        $prmLibOpus = (Get-FFmpegAudioParameters -InputFileName $InputFileName -Codec libopus) -join ' '
+    }
     $strScript1 += Convert-VideoFile -InputFileName $InputFileName -OutputFileDirName $OutputDirName -encoder $encoder -targetQuality $targetQuality # -prmVideo $prmX265 -prmAudio $prmAAC
 }
 
