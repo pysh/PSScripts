@@ -717,6 +717,7 @@ function Get-FFmpegAudioParameters {
     $audioParams = @()
     $trackIndex = 0
     foreach ($track in $audioTracks.streams) {
+        $index = $track.index
         $channels = $track.channels
         $channelLayout = $track.channel_layout
 

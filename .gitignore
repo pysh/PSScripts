@@ -2,3 +2,4 @@ Scripts.code-workspace
 SQLite.Interop.dll
 sqlite3.dll
 System.Data.SQLite.dll
+ShowParams.exe

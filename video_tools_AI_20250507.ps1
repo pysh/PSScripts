@@ -1,10 +1,19 @@
-# Load external functions
+<# ===========================================================================================
+.SYNOPSIS
+    Набор утилит для работы с видеофайлами
+.DESCRIPTION
+    Содержит функции для анализа видео, сравнения качества, извлечения метаданных и работы с цветовыми параметрами
+#>
+
+# Загрузка внешних функций
 . 'C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\function_Invoke-Executable.ps1'
+
 enum libVmafPool {
     mean
     harmonic_mean
 }
 
+# Хеш-таблицы для преобразования цветовых параметров
 $script:ColorRangeMappings = @{
     'tv' = @{
         'aomenc' = @{ param = '--color-range='; value = '0' };
@@ -161,6 +170,24 @@ $script:MatrixMappings = @{
     }
 }
 
+<# ===========================================================================================
+.SYNOPSIS
+    Получает значение XPSNR между двумя видеофайлами
+.DESCRIPTION
+    Вычисляет метрику XPSNR (расширенный PSNR) между искаженным и эталонным видео
+.PARAMETER Distorted
+    Путь к искаженному видеофайлу
+.PARAMETER Reference
+    Путь к эталонному видеофайлу
+.PARAMETER TrimStartSeconds
+    Начальная точка обрезки в секундах
+.PARAMETER DurationSeconds
+    Длительность сегмента для анализа
+.PARAMETER Pool
+    Метод агрегации результатов (mean или harmonic_mean)
+.PARAMETER OutputLog
+    Путь к файлу лога
+#>
 function Get-XPSNRValue {
     param(
         [Parameter(Mandatory = $true)]
@@ -182,7 +209,6 @@ function Get-XPSNRValue {
         else { "[0:v]null[dist];[1:v]null[ref];" }
         "[dist][ref]"
         "xpsnr=eof_action=endall"
-        #$(if ($OutputLog) {":stats_file='$($OutputLog)'"})
         '"'
     )
 
@@ -193,9 +219,10 @@ function Get-XPSNRValue {
         "-an -sn -dn -f null -"
     ) -join " "
 
-    Write-Verbose "Launching ffmpeg with args: $cmdXPSNR"
+    Write-Verbose "Запуск ffmpeg с параметрами: $cmdXPSNR"
     $outputPSNR = Invoke-Executable -sExeFile 'ffmpeg' -cArgs $cmdXPSNR -sWorkDir (Get-Location).Path 
     $regexp = '.*XPSNR  y: (?<xpsnr_y>\d+\.?\d+).*u: (?<xpsnr_u>\d+\.?\d+).*v: (?<xpsnr_v>\d+\.?\d+)'
+    
     if ($outputPSNR.StdErr -match $regexp) {
         $xpsnr = @{
             Y   = [double]$Matches.xpsnr_y
@@ -205,14 +232,21 @@ function Get-XPSNRValue {
         }
     }
     else {
-        throw "Failed to extract XPSNR score from output"
+        throw "Не удалось извлечь значение XPSNR из вывода"
     }
+    
     if (-not $xpsnr.AVG) {
-        throw "Failed to extract XPSNR score from output"
+        throw "Не удалось извлечь значение XPSNR из вывода"
     }
     return [double]$xpsnr.AVG
 }
 
+<# ===========================================================================================
+.SYNOPSIS
+    Получает значение VMAF между двумя видеофайлами
+.DESCRIPTION
+    Вычисляет метрику VMAF (Video Multi-Method Assessment Fusion) между искаженным и эталонным видео
+#>
 function Get-VMAFValue {
     param(
         [Parameter(Mandatory = $true)]
@@ -244,6 +278,7 @@ function Get-VMAFValue {
         "model=version=$($ModelVersion)" -join ':')
         '"'
     )
+
     $cmdVMAF = @(
         "-hide_banner -y -nostats",
         ('-i "{0}" -i "{1}"' -f $Distorted, $Reference)
@@ -251,23 +286,46 @@ function Get-VMAFValue {
         "-an -sn -dn -f null -"
     ) -join " "
 
-    Write-Verbose "Launching ffmpeg with args: $cmdVMAF"
+    Write-Verbose "Запуск ffmpeg с параметрами: $cmdVMAF"
     $outputVMAF = Invoke-Executable -sExeFile 'ffmpeg' -cArgs $cmdVMAF -sWorkDir (Get-Location).Path
     $vmaf = $outputVMAF.StdErr | Select-String "VMAF score: (\d+\.\d+)" | ForEach-Object { $_.Matches.Groups[1].Value }
+    
     if (-not $vmaf) {
-        throw "Failed to extract VMAF score from output"
+        throw "Не удалось извлечь значение VMAF из вывода"
     }
     return [double]$vmaf
 }
 
+<# ===========================================================================================
+.SYNOPSIS
+    Получает количество аудиоканалов в файле
+.PARAMETER AudioFilePath
+    Путь к аудиофайлу
+#>
 function Get-AudioTrackChannels {
-    param([Parameter(Mandatory = $true)][string]$AudioFilePath)
-    $outAudioChannels = & ffprobe -v error -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$AudioFilePath" 2>&1
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$AudioFilePath
+    )
+    
+    $outAudioChannels = & ffprobe -v error -show_entries stream=channels `
+        -of default=noprint_wrappers=1:nokey=1 "$AudioFilePath" 2>&1
     return [Int16]$outAudioChannels
 }
 
 
-# By Workik & Deepchat v.4
+<# ===========================================================================================
+By Workik & Deepchat v.4
+.SYNOPSIS
+Calculates average video bitrate using packet-level statistics from ffprobe.
+
+.DESCRIPTION
+When stream doesn't contain bit_rate metadata, calculates it by analyzing individual packets
+using ffprobe's packet inspection capability.
+
+.PARAMETER VideoFilePath
+    Путь к видеофайлу
+#>
 function Get-VideoStatsAI {
     [CmdletBinding()]
     param(
@@ -360,202 +418,12 @@ function Get-VideoStatsAI {
 }
 
 
-<#
-# By Workik & Deepchat v.3
-function Get-VideoStats3 {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [ValidateScript({Test-Path -LiteralPath $_ -PathType Leaf})]
-        [string]$VideoFilePath
-    )
-    
-    try {
-        $videoFile = Get-Item -LiteralPath $VideoFilePath -ErrorAction Stop
-        
-        # Get all video stream info in one ffprobe call
-        $streamMetadata = & ffprobe -v error -select_streams v:0 `
-            -show_entries stream=width,height,r_frame_rate,nb_read_packets `
-            -show_entries format=size `
-            -of json "$VideoFilePath" | ConvertFrom-Json -AsHashtable
-        
-        # Calculate FPS from ratio
-        $framesPerSecond = if ($streamMetadata.streams[0].r_frame_rate -match '(\d+)/(\d+)') {
-            [math]::Round([decimal]$matches[1] / [decimal]$matches[2], 3)
-        } else {
-            [decimal]$streamMetadata.streams[0].r_frame_rate
-        }
-
-        # Get detailed packet info in separate call only if needed
-        $packetMetadata = & ffprobe -v error -select_streams v:0 `
-            -show_entries packet=dts_time,pts_time,size,flags `
-            -of json "$VideoFilePath" | ConvertFrom-Json -AsHashtable
-        
-        # Calculate duration and bitrate from packets
-        $durationFromPackets = $videoBitrate = $videoDataSize = 0
-        if ($packetMetadata.packets -and $packetMetadata.packets.Count -gt 0) {
-            $firstPacketTime = [double]$packetMetadata.packets[0].pts_time
-            $lastPacketTime = [double]($packetMetadata.packets | Measure-Object -Property pts_time -Maximum).Maximum
-            $durationFromPackets = $lastPacketTime - $firstPacketTime
-            $videoDataSize = ($packetMetadata.packets | Measure-Object -Property size -Sum).Sum
-            
-            if ($durationFromPackets -gt 0) {
-                $videoBitrate = [math]::Round(($videoDataSize * 8) / $durationFromPackets / 1Kb, 2)
-            }
-        }
-
-        $totalFrames = [int]$streamMetadata.streams[0].nb_read_packets
-        $durationFromFrames = [math]::Round($totalFrames / $framesPerSecond, 3)
-        
-        # Build result object
-        return [PSCustomObject]@{
-            FilePath            = $VideoFilePath
-            FileName            = $videoFile.Name
-            FileSizeBytes       = $videoFile.Length
-            VideoDataSizeBytes   = $videoDataSize
-            ResolutionWidth     = [int]$streamMetadata.streams[0].width
-            ResolutionHeight    = [int]$streamMetadata.streams[0].height
-            FrameRate           = $framesPerSecond
-            FrameCount          = $totalFrames
-            # DurationSeconds     = $durationFromFrames
-            DurationFromPackets = [math]::Round($durationFromPackets, 3)
-            FormattedDuration   = "{0:hh\:mm\:ss}" -f [timespan]::fromseconds($durationFromFrames)
-            BitrateKbps         = $videoBitrate
-            StreamMetadata      = $streamMetadata.streams[0]  # Original stream info
-            PacketMetadata      = $packetMetadata            # Original packet info
-        }
-    }
-    catch {
-        Write-Error "Error processing video file '$VideoFilePath': $_"
-        throw
-    }
-}
-
-
-function Get-VideoStats2 {
-    param([Parameter(Mandatory = $true)][string]$VideoPath)
-    
-    $size = (Get-Item -LiteralPath $VideoPath).Length
-    
-    # Get fps using ffprobe
-    $outputFPS = & ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "$VideoPath" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to get video FPS: $outputFPS"
-    }
-    
-    # Calculate FPS from ratio (usually comes as "24000/1001" or similar)
-    $fps = if ($outputFPS -match '(\d+)/(\d+)') {
-        [math]::Round([decimal]$matches[1] / [decimal]$matches[2], 3)
-    }
-    else {
-        [decimal]$outputFPS
-    }
-
-    # Get frame count using ffprobe
-    $outputFrameCount = & ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$VideoPath" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to get video frame count: $outputFrameCount"
-    }
-    [decimal]$frameCount = [math]::Round($outputFrameCount)
-
-    # Get videostream info
-    $streamInfoJSON = (& ffprobe -v error -select_streams v:0 -show_entries stream -of json "${VideoPath}" | ConvertFrom-Json -AsHashtable).streams[0]
-    
-    
-    # Get packets info
-    $packetInfoJSON = (& ffprobe -v error -select_streams v:0 -show_entries packet=dts_time,duration_time,pts_time,size,flags -of json "${VideoPath}" | ConvertFrom-Json -AsHashtable)
-    if (-not $packetInfoJSON.packets -or $packetInfoJSON.packets.Count -eq 0) {
-        Write-Warning "No packet data available for: $file"
-        $packetsSize = 0
-    } else {
-    
-    # Calculate total video data size in bytes
-    $packetsSize = ($packetInfoJSON.packets | Measure-Object -Property size -Sum).Sum
-    
-    # Calculate duration using first and last packet timestamps
-    $firstPacket = [double]$packetInfoJSON.packets[0].pts_time
-    $lastPacket = [double]($packetInfoJSON.packets | Measure-Object -Property pts_time -Maximum).Maximum
-    $duration = $lastPacket - $firstPacket
-    }
-
-    if ($duration -le 0) {
-        $bitrate = 0
-    } else {
-    # Calculate bitrate in kbps (kilobits per second)
-        $bitrate = [math]::Round(($packetsSize * 8) / $duration / 1Kb, 2)
-    }
-    
-    return $streamInfoJSON += @{
-        _FPS    = $fps
-        _BITRATE = $bitrate
-        _SizeTotal   = $size
-        _SizePackets   = $packetsSize
-        _FrameCount = $frameCount
-        _DurationSeconds = $frameCount/$fps
-        _DurationSecondsP = $duration
-        _DurationTime = "{0:hh\:mm\:ss}" -f [timespan]::fromseconds($frameCount/$fps)
-        _Path   = $VideoPath
-        _Name   = (Get-Item -LiteralPath $VideoPath).Name
-    }
-
-}
-
+<# ===========================================================================================
+.SYNOPSIS
+    Сравнивает качество двух видеофайлов
+.DESCRIPTION
+    Вычисляет метрики VMAF и XPSNR между двумя видеофайлами
 #>
-
-
-function Get-VideoStats {
-    param([Parameter(Mandatory = $true)][string]$VideoPath)
-    
-    $size = (Get-Item -LiteralPath $VideoPath).Length
-    # $sizeGB = [math]::Round($size/1GB, 3)
-    
-    # Get fps using ffprobe
-    $outputFPS = & ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "$VideoPath" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to get video FPS: $outputFPS"
-    }
-    
-    # Calculate FPS from ratio (usually comes as "24000/1001" or similar)
-    $fps = if ($outputFPS -match '(\d+)/(\d+)') {
-        [math]::Round([decimal]$matches[1] / [decimal]$matches[2], 3)
-    }
-    else {
-        [decimal]$outputFPS
-    }
-
-    # Get frame count using ffprobe
-    $outputFrameCount = & ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$VideoPath" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to get video frame count: $outputFrameCount"
-    }
-    [decimal]$frameCount = [math]::Round($outputFrameCount)
-    
-    # Получаем размер кадра (ширина и высота) с помощью ffprobe
-    $outputResolution = & ffprobe -v error -select_streams v:0 -show_entries stream=width, height -of default=noprint_wrappers=1 "$VideoPath" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to get video resolution: $outputResolution"
-    }
-
-    # Извлекаем ширину и высоту из результата
-    $resolutionParts = $outputResolution -split "`n"
-    if ($resolutionParts.Count -eq 2) {
-        $width = [int]$resolutionParts[0]
-        $height = [int]$resolutionParts[1]
-    }
-    else {
-        throw "Invalid format for video resolution: $outputResolution"
-    }
-    return @{
-        Path   = $VideoPath
-        Name   = (Get-Item -LiteralPath $VideoPath).Name
-        Size   = $size
-        Frames = [int]$frameCount
-        FPS    = $fps
-        Width  = $width
-        Height = $height
-    }
-}
-
 function Get-VideoQuality {
     param(
         [Parameter(Mandatory = $true)]
@@ -570,22 +438,35 @@ function Get-VideoQuality {
         [switch]$WriteLog = $false
     )
 
-    # Create temp files for metrics output
+    # Проверка существования файлов
+    if (-not (Test-Path -LiteralPath $Distorted)) {
+        throw "Искаженный видеофайл не найден: $Distorted"
+    }
+    if (-not (Test-Path -LiteralPath $Reference)) {
+        throw "Эталонный видеофайл не найден: $Reference"
+    }
+
+    # Создание временных файлов для логов
     if ($WriteLog) {
-        # $rndFileName = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetRandomFileName())
         $logXPSNR = [System.IO.Path]::ChangeExtension($Distorted, "xpsnr.log").Replace('\', '/').Replace(':', '\:')
         $logVMAF = [System.IO.Path]::ChangeExtension($Distorted, "vmaf.json").Replace('\', '/').Replace(':', '\:')
     }
-    else {
-        $logXPSNR = $null
-        $logVMAF = $null
-    }
 
     try {
-        # Set working directory to avoid ffmpeg creating files in random locations
+        # Установка рабочей директории
         Set-Location -LiteralPath (Get-Item -LiteralPath $Distorted).Directory.FullName
 
-        # Calculate XPSNR score
+        # Получение информации о видео с помощью Get-VideoStatsAI
+        $distortedStats = Get-VideoStatsAI -VideoFilePath $Distorted
+        $referenceStats = Get-VideoStatsAI -VideoFilePath $Reference
+
+        # Проверка совместимости видео
+        if ($distortedStats.ResolutionWidth -ne $referenceStats.ResolutionWidth -or 
+            $distortedStats.ResolutionHeight -ne $referenceStats.ResolutionHeight) {
+            Write-Warning "Разрешения видео не совпадают: $($distortedStats.ResolutionWidth)x$($distortedStats.ResolutionHeight) vs $($referenceStats.ResolutionWidth)x$($referenceStats.ResolutionHeight)"
+        }
+
+        # Расчет XPSNR
         $xpsnr = if ($calcXPSNR) {
             Get-XPSNRValue -Distorted $Distorted `
                 -Reference $Reference `
@@ -594,9 +475,9 @@ function Get-VideoQuality {
                 -OutputLog $logXPSNR
         }
 
-        # Calculate VMAF score
+        # Расчет VMAF
         $vmaf = if ($calcVMAF) {
-            Get-VMAFValue  -Distorted $Distorted `
+            Get-VMAFValue -Distorted $Distorted `
                 -Reference $Reference `
                 -TrimStartSeconds $TrimStartSeconds `
                 -DurationSeconds $DurationSeconds `
@@ -604,40 +485,47 @@ function Get-VideoQuality {
                 -MaxThreads $MaxThreads
         }
 
-        return @{
+        return [PSCustomObject]@{
             VMAF  = $vmaf
             XPSNR = $xpsnr
+            DistortedStats = $distortedStats
+            ReferenceStats = $referenceStats
         }
     }
     catch {
-        Write-Error "Error in Get-VideoQuality: $_"
+        Write-Error "Ошибка при сравнении видео: $_"
         throw
     }
     finally {
-        # Optional: Clean up temp files if not WriteLog
+        # Очистка временных файлов
         if (-not $WriteLog) {
             if ($logXPSNR -and (Test-Path -LiteralPath $logXPSNR)) {
-                Remove-Item $logXPSNR -Force
+                Remove-Item -LiteralPath $logXPSNR -Force
             }
             if ($logVMAF -and (Test-Path -LiteralPath $logVMAF)) {
-                Remove-Item $logVMAF -Force
+                Remove-Item -LiteralPath $logVMAF -Force
             }
         }
     }
 }
 
+
+<#
+.SYNOPSIS
+    Получает цветовые параметры видеофайла
+#>
 function Get-VideoColorParams {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$VideoPath
+        [string]$VideoFilePath
     )
 
     $colorParams = & ffprobe -v error -select_streams v:0 `
         -show_entries "stream=color_range,color_space,color_transfer,color_primaries" `
-        -of default=noprint_wrappers=1 "$VideoPath" 2>&1
-$colorParams
+        -of default=noprint_wrappers=1 "$VideoFilePath" 2>&1
+
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to get video color parameters: $colorParams"
+        throw "Не удалось получить цветовые параметры видео: $colorParams"
     }
 
     $result = @{}
@@ -651,14 +539,104 @@ $colorParams
         }
     }
 
-    return @{
+    return [PSCustomObject]@{
         ColorRange     = $result['color_range']
-        ColorSpace     = $result['color_space']      # Matrix coefficients
-        ColorTransfer  = $result['color_transfer']   # Transfer characteristics
+        ColorSpace     = $result['color_space']
+        ColorTransfer  = $result['color_transfer']
         ColorPrimaries = $result['color_primaries']
     }
 }
 
+
+<# ===========================================================================================
+.SYNOPSIS
+    Получает параметры кодирования для аудио
+.DESCRIPTION
+    Генерирует параметры кодирования аудио для ffmpeg на основе исходного файла
+#>
+function Get-FFmpegAudioParameters {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$InputFileName,
+        [ValidateSet('libopus', 'libfdk_aac')]
+        [string]$Codec = 'libopus',
+        [int]$MaxChannels = 0
+    )
+
+    # Получение информации об аудиодорожках
+    $consoleEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $audioTracks = (. ffprobe -v error -select_streams a -show_entries `
+            "stream=index,codec_name,channels,channel_layout:stream_disposition:stream_tags=language,title" `
+            -of json "$InputFileName") | ConvertFrom-Json
+    [Console]::OutputEncoding = $consoleEncoding
+
+    $audioParams = @()
+    $trackIndex = 0
+    
+    foreach ($track in $audioTracks.streams) {
+        $channels = $track.channels
+        $channelLayout = $track.channel_layout
+
+        # Ограничение количества каналов
+        if ($MaxChannels -gt 0 -and $channels -gt $MaxChannels) {
+            $channels = $MaxChannels
+        }
+
+        # Установка битрейта в зависимости от кодеков
+        $bitrate = switch ($Codec) {
+            'libopus' {
+                switch ($channels) {
+                    { $_ -le 2 } { '160k'; break }
+                    { $_ -le 6 } { '384k'; break }
+                    default { '512k' }
+                }
+            }
+            'libfdk_aac' {
+                switch ($channels) {
+                    { $_ -le 2 } { '192k'; break }
+                    { $_ -le 6 } { '512k'; break }
+                    default { '768k' }
+                }
+            }
+        }
+
+        # Формирование параметров для дорожки
+        $trackParams = @(
+            "-map 0:a:$trackIndex"
+            "-c:a:$trackIndex $Codec"
+            if ($Codec -eq 'libfdk_aac') { "-vbr 5" }
+            else { "-b:a:$trackIndex $bitrate" }
+            "-ac:a:$trackIndex $channels"
+        )
+
+        # Добавление информации о каналах
+        if ($channels -ne $track.channels -and $channelLayout -like "*(side)*") {
+            $trackParams += "-af:a:$trackIndex aformat=channel_layouts='7.1|5.1|stereo'"
+        }
+
+        # Добавление метаданных
+        if ($track.tags.language) {
+            $trackParams += "-metadata:s:a:$trackIndex language=$($track.tags.language)"
+        }
+        if ($track.tags.title) {
+            $trackParams += "-metadata:s:a:$trackIndex title='$($track.tags.title)'"
+        }
+        elseif ($track.disposition.original -eq 1) {
+            $trackParams += "-metadata:s:a:$trackIndex title='Original Audio'"
+        }
+
+        $audioParams += ($trackParams -join ' ')
+        $trackIndex++
+    }
+
+    return $audioParams
+}
+
+
+
+# ===========================================================================================
+# ===========================================================================================
 function Get-VideoColorMappings {
     param(
         [Parameter(Mandatory = $true)]
@@ -689,98 +667,6 @@ function Get-VideoColorMappings {
     }
 
     return $mappings
-}
-
-# Using:
-# $audioParams = Get-FFmpegAudioParameters -InputFileName "video.mkv" -Codec libopus -MaxChannels 6
-function Get-FFmpegAudioParameters {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$InputFileName,
-        
-        [Parameter(Mandatory = $false)]
-        [ValidateSet('libopus', 'libfdk_aac')]
-        [string]$Codec = 'libopus',
-        
-        [Parameter(Mandatory = $false)]
-        [int]$MaxChannels = 0
-    )
-
-    # Get audio tracks info using ffprobe
-    $consoleEncoding = [Console]::OutputEncoding
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    $audioTracks = (. ffprobe -v error -select_streams a -show_entries `
-            "stream=index,codec_name,channels,channel_layout:stream_disposition:stream_tags=language,title" `
-            -of json "$InputFileName") | ConvertFrom-Json
-    [Console]::OutputEncoding = $consoleEncoding
-
-    $audioParams = @()
-    $trackIndex = 0
-    foreach ($track in $audioTracks.streams) {
-        $channels = $track.channels
-        $channelLayout = $track.channel_layout
-
-        # Limit channels if MaxChannels specified
-        if ($MaxChannels -gt 0 -and $channels -gt $MaxChannels) {
-            $channels = $MaxChannels
-        }
-
-        # Set bitrate based on channels and codec
-        $bitrate = switch ($Codec) {
-            'libopus' {
-                switch ($channels) {
-                    { $_ -le 2 } { '160k'; break }
-                    { $_ -le 6 } { '384k'; break }
-                    default { '512k' }
-                }
-            }
-            'libfdk_aac' {
-                switch ($channels) {
-                    { $_ -le 2 } { '192k'; break }
-                    { $_ -le 6 } { '512k'; break }
-                    default { '768k' }
-                }
-            }
-        }
-
-        # Build parameter string for this track
-        $trackParams = @(
-            "-map 0:a:$TrackIndex"
-            "-c:a:$trackIndex $Codec"
-            if ($Codec -eq 'libfdk_aac') {
-                "-vbr 5"  # High quality VBR mode for libfdk_aac
-            }
-            else {
-                "-b:a:$trackIndex $bitrate"
-            }
-            "-ac:a:$trackIndex $channels"
-        )
-
-        # Add channel layout conversion if needed
-        if ($channels -ne $track.channels -and $channelLayout -like "*(side)*") {
-            $trackParams += "-af:a:$trackIndex aformat=channel_layouts='7.1|5.1|stereo'"
-        }
-
-        # Add metadata
-        if ($track.tags.language) {
-            $trackParams += "-metadata:s:a:$trackIndex language=$($track.tags.language)"
-        }
-        if ($track.tags.title) {
-            $trackParams += "-metadata:s:a:$trackIndex title='$($track.tags.title)'"
-        }
-        elseif ($track.disposition.original -eq 1) {
-            $trackParams += "-metadata:s:a:$trackIndex title='Original Audio'"
-        }
-
-        # Set disposition
-        $disposition = if ($track.disposition.default -eq 1) { 'default' } else { '0' }
-        $trackParams += "-disposition:a:$trackIndex $disposition"
-
-        $audioParams += ($trackParams -join ' ')
-        $trackIndex++
-    }
-
-    return $audioParams
 }
 
 function Save-VideoTags {
@@ -879,7 +765,6 @@ function Set-VideoTags {
     }
 }
 
-
 function Write-MKV {
     param (
         [Parameter(Mandatory = $true)]
@@ -893,10 +778,7 @@ function Write-MKV {
 
 }
 
-
-
-
-function Extract-ZipArchives {
+function Expand-ZipArchives {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -988,4 +870,3 @@ function Extract-ZipArchives {
 
     # Write-Host "ZIP extraction completed. Total files processed: $totalFiles" -ForegroundColor Cyan
 }
-
