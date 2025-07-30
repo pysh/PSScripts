@@ -6,17 +6,25 @@
     This script performs comprehensive video encoding tests using various AV1 encoders with 
     different quality settings. It generates comparative reports with quality metrics.
 
+    Supported encoders:
+    - SVT-AV1 (including psychovisual tuning)
+    - aomenc 3.12
+
     Key features:
-    - Supports multiple AV1 encoders (SVT-AV1, rav1e, aomenc)
-    - Customizable quality/preset combinations
+    - Customizable quality/preset combinations per encoder
     - Frame-accurate source sampling
     - VMAF quality metric calculation
     - Detailed encoding statistics
     - CSV report generation
+    - Automatic MKV container muxing
 
 .PARAMETER SourceVideoPath
     Path to the source video file for encoding tests.
-    Default: 'y:\.temp\YT_y\Стыдно знать\Стыдно знать - 20250520 - Пушкин vs Сапрыкин [4k][noAdv].mkv'
+    Default: 'g:\Видео\Сериалы\Зарубежные\Гангстерленд (MobLand)\season 01\MobLand.S01.2160p.SDR\MobLand.S01E01.2160p.SDR.mkv'
+
+.PARAMETER TempDir
+    Temporary directory for test files.
+    Default: 'Y:\.temp\Сериалы\Зарубежные\Mobland\'
 
 .PARAMETER SampleDurationSeconds
     Duration of test samples in seconds (1-10000).
@@ -25,7 +33,7 @@
 .PARAMETER FrameServer
     Frame server engine for video processing.
     Valid values: 'AviSynth', 'VapourSynth'
-    Default: 'AviSynth'
+    Default: 'VapourSynth'
 
 .EXAMPLE
     PS> .\Create-TestVideoFiles_DeepSeek.ps1 -SourceVideoPath "C:\videos\test.mkv" -SampleDurationSeconds 60
@@ -33,9 +41,9 @@
     Runs encoding tests with 1-minute samples from specified video file.
 
 .EXAMPLE
-    PS> .\Create-TestVideoFiles_DeepSeek.ps1 -FrameServer VapourSynth
+    PS> .\Create-TestVideoFiles_DeepSeek.ps1 -FrameServer AviSynth -TempDir "D:\temp\"
     
-    Runs tests using VapourSynth frame server with default settings.
+    Runs tests using AviSynth frame server with custom temp directory.
 
 .INPUTS
     None. You cannot pipe input to this script.
@@ -48,18 +56,18 @@
 .NOTES
     System Requirements:
     - PowerShell 5.1 or later
-    - AV1 encoders (SVT-AV1, rav1e, aomenc)
+    - AV1 encoders (SVT-AV1, aomenc)
     - Frame server (AviSynth+ or VapourSynth)
     - FFmpeg tools (ffmpeg, ffprobe)
+    - MKVToolNix (mkvmerge)
     - video_tools_AI.ps1 helper module
 
 .LINK
     SVT-AV1 Project: https://gitlab.com/AOMediaCodec/SVT-AV1
-    rav1e Encoder:   https://github.com/xiph/rav1e
-    aomenc Encoder:  https://aomedia.googlesource.com/aom/
+    aomenc Encoder: https://aomedia.googlesource.com/aom/
 
 .VERSION
-    2.1.0
+    2.2.0
 
 .AUTHOR
     Paul Nosov
@@ -67,23 +75,13 @@
     GitHub: https://github.com/pysh
 
 .DATE
-    2025-05-31
-#>
-
-<#
-.SYNOPSIS
-    Automated SVT-AV1 video encoding test suite.
-#>
-
-<#
-.SYNOPSIS
-    Automated SVT-AV1 video encoding test suite with MKV output.
+    2025-07-01
 #>
 
 param (
     [Parameter(Mandatory = $false)]
     [ValidateScript({ Test-Path $_ -PathType Leaf })]
-    [string]$SourceVideoPath = 'Y:\.temp\Сериалы\Отечественные\Трасса\season 01\[NOOBDL]Трасса.S01E01.2160p.WEB-DL.x265.mkv',
+    [string]$SourceVideoPath = 'v:\Сериалы\Отечественные\Почка\Pochka.S03.2025.WEB-DL.1080p.ExKinoRay\Pochka.S03.E01.2025.WEB-DL.1080p.ExKinoRay.mkv',
     
     [Parameter(Mandatory = $false)]
     [ValidateScript({ Test-Path $_ -PathType Container })]
@@ -95,7 +93,15 @@ param (
 
     [Parameter(Mandatory = $false)]
     [ValidateSet('AviSynth', 'VapourSynth')] 
-    [string]$FrameServer = 'AviSynth'
+    [string]$FrameServer = 'AviSynth',
+
+    [Parameter(Mandatory = $false)]
+    [System.Object]$CropParameters = @{
+        Left   = 0
+        Right  = 0
+        Top    = 0
+        Bottom = 0
+    }
 )
 
 #region Configuration
@@ -132,26 +138,35 @@ $script:Encoders = @(
     [VideoEncoder]::new(
         "SvtAv1",
         "X:\Apps\_VideoEncoding\av1an\SvtAv1EncApp3.exe",
-        @("--progress", "2", "--rc", "0"),  # [0 = VQ, 1 = PSNR, 2 = SSIM], default is 1
+        @("--progress", "2", "--rc", "0"),
         { param($crf, $preset) @("--crf", $crf, "--preset", $preset) },
-        @(20..24),  # QualityLevels (CRF values)
-        @(4),    # EncodingPresets
-        @("")       # ExtraParams
+        @(25..40),
+        @(4),
+        @("")
     ),
     [VideoEncoder]::new(
         "SvtAv1PSY",
         "X:\Apps\_VideoEncoding\av1an\SvtAv1EncApp3PSY.exe",
-        @("--progress", "3", "--rc", "0", "--hbd-mds", "2"),  # [0 = VQ, 1 = PSNR, 2 = SSIM, 3 = Subjective SSIM, 4 = Still Picture], default is 2
+        @("--progress", "3", "--rc", "0", "--hbd-mds", "2"),
         { param($crf, $preset) @("--crf", $crf, "--preset", $preset) },
-        @(25..30),          # Different CRF range for PSY version
-        @(4),               # Different preset range
-        @("")    # No extra params needed
+        @(30..36),
+        @(4),
+        @("")
+    ),
+    [VideoEncoder]::new(
+        "AOMEnc",
+        'X:\Apps\_VideoEncoding\av1an\aomenc.exe',
+        @("--passes=1", "--end-usage=q", "--threads=0", "--tune=ssim", "--enable-qm=1", "--deltaq-mode=3", "--ivf", "--bit-depth=10"),
+        { param($crf, $preset) @("--cq-level=$crf", "--cpu-used=$preset") },
+        @(24..21),
+        @(4),
+        @("")
     )
 )
 
-# Test configuration (now simplified)
+# Test configuration
 $script:EncodingConfig = @{
-    TestedEncoders = @('SvtAv1') # Encoders to test
+    TestedEncoders = @('SvtAv1')
 }
 
 # External tools
@@ -169,11 +184,10 @@ function Test-ToolExists {
     }
 }
 
-# Проверка всех необходимых инструментов
+# Verify all required tools
 foreach ($tool in $script:EncodingTools.Values) {
     Test-ToolExists $tool
 }
-
 
 # Load helper functions
 . 'C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\video_tools_AI.ps1'
@@ -243,7 +257,6 @@ function New-FrameServerScript {
         [string]$VideoPath,
         [int]$Duration,
         [object]$SourceVideoInfo,
-        #[float]$FPS,
         [string]$ServerType,
         [object]$CropParams
     )
@@ -259,10 +272,8 @@ core = vs.core
 sample_seconds = $Duration
 sys.path.append(r"X:\Apps\_VideoEncoding\StaxRip\Apps\Plugins\VS\Scripts")
 clip = core.lsmas.LWLibavSource(r"$VideoPath")
-#clip = core.std.AssumeFPS(clip, None, ${FPSNum}, ${FPSDen})
 clip = core.std.Crop(clip, $($CropParams.Left), $($CropParams.Right), $($CropParams.Top), $($CropParams.Bottom))
 clip = core.neo_f3kdb.Deband(clip, y=64, cb=64, cr=64, output_depth=10, preset="nograin")
-#clip = core.std.SelectEvery(clip, cycle=clip.num_frames/10, offsets=range(round($FPS*sample_seconds/10)), modify_duration=False)
 clip.set_output()
 "@
     }
@@ -272,10 +283,8 @@ AddAutoloadDir("X:\Apps\_VideoEncoding\StaxRip\Apps\FrameServer\AviSynth\plugins
 LoadPlugin("X:\Apps\_VideoEncoding\StaxRip\Apps\Plugins\Dual\f3kdb Neo\neo-f3kdb.dll")
 LoadPlugin("X:\Apps\_VideoEncoding\StaxRip\Apps\Plugins\Dual\L-SMASH-Works\LSMASHSource.dll")
 LWLibavVideoSource("$VideoPath")
-# AssumeFPS(${FPSNum}, ${FPSDen})
 crop($($CropParams.Left), $($CropParams.Top), $(0-$CropParams.Right), $(0-$CropParams.Bottom))
 neo_f3kdb(preset="nograin", output_depth=10)
-#SelectRangeEvery(every=FrameCount/10, length=int($FPS*$Duration/10), offset=0, audio=true)
 "@
     }
     
@@ -304,18 +313,23 @@ function Invoke-EncodingWithStats {
             Write-Log -Message "Starting $($Job.Encoder.Name) encoder..." -Severity Info
             
             $qualityParams = & $Job.Encoder.GetQualityParams $Job.Crf $Job.Preset
-            $allParams = $Job.Encoder.CommonParams + `
-                $qualityParams + `
-            $(if ( $Job.ExtraParams -ne '' ) { $Job.ExtraParams } ) + `
+            $allParams = $Job.Encoder.CommonParams + $qualityParams + `
+            $(if ($Job.ExtraParams -ne '') { $Job.ExtraParams }) + `
             @(
-                "--input", "stdin",
-                "--output", $tempIvfFile
+                if ($Job.Encoder.Name -eq "AOMEnc") {
+                    "-o", $tempIvfFile
+                    "-"
+                }
+                else {
+                    "--input", "-",
+                    "--output", $tempIvfFile
+                }
             )
 
             Write-Log -Message ($ffmpegParams -join ' ') -Severity Debug
             Write-Log -Message ($allParams -join ' ') -Severity Debug
 
-            if ( $Job.ServerType -eq 'VapourSynth') {
+            if ($Job.ServerType -eq 'VapourSynth') {
                 & $script:EncodingTools.VSPipe -c y4m "$($Job.InputScript)" - | & $Job.Encoder.ExecutablePath @allParams
             }
             else {
@@ -338,15 +352,21 @@ function Invoke-EncodingWithStats {
     $timer.Stop()
 
     $outputFileInfo = Get-VideoStatsAI -VideoFilePath $Job.OutputFile
-    Write-Log -Message "VMAF calculating..." -Severity Debug
-    $vmafScore = Get-VMAFValueAI -Distorted $Job.OutputFile -Reference $Job.InputScript
+    $VMAFModelVersion = if ([int]$Job.SourceVideoInfo.ResolutionHeight -le 1080) {
+        'vmaf_v0.6.1'
+    } else {
+        'vmaf_4k_v0.6.1'
+    }
+    Write-Log -Message "VMAF calculating with model ${VMAFModelVersion}..." -Severity Info
+    
+    $vmafScore = Get-VMAFValueAI -Distorted $Job.OutputFile -Reference $Job.InputScript -ModelVersion $VMAFModelVersion
     $vmafScore = [Math]::Round($vmafScore, 2)
     $finalOutputName = Join-Path -Path (Get-Item -LiteralPath $Job.OutputFile).DirectoryName `
         -ChildPath ("$((Get-Item -LiteralPath $Job.OutputFile).BaseName)_[${vmafScore}]$((Get-Item -LiteralPath $Job.OutputFile).Extension)")
     Rename-Item -LiteralPath $Job.OutputFile -NewName $finalOutputName -Force
 
     return [EncodingResult]@{
-        FileName            = $finalOutputName #[IO.Path]::GetFileName($Job.OutputFile)
+        FileName            = $finalOutputName
         Encoder             = $Job.Encoder.Name
         Parameters          = ($Job.Encoder.CommonParams + $qualityParams + $Job.ExtraParams) -join " "
         EncodedVideoSizeMB  = [math]::Round($outputFileInfo.VideoDataSizeBytes / 1MB, 3)
@@ -383,8 +403,7 @@ try {
 
     # Calculate total number of tests to run
     $totalTests = 0
-    foreach ($encoderName in $script:EncodingConfig.TestedEncoders) {
-        $encoder = $script:Encoders | Where-Object { $_.Name -eq $encoderName }
+    foreach ($encoder in $availableEncoders) {
         $combinations = $encoder.QualityLevels.Count * $encoder.EncodingPresets.Count * $encoder.ExtraParams.Count
         Write-Log -Message "Encoder $($encoder.Name) has $combinations test combinations" -Severity Info
         $totalTests += $combinations
@@ -397,7 +416,8 @@ try {
     
     $workingDirectory = if (Test-Path -LiteralPath $TempDir -PathType Container) {
         Join-Path -Path $TempDir -ChildPath "$($sourceVideoFile.BaseName)_AV1_Tests"
-    } else {
+    }
+    else {
         Join-Path -Path $sourceVideoFile.DirectoryName -ChildPath "$($sourceVideoFile.BaseName)_AV1_Tests"
     }
     New-Item -Path $workingDirectory -ItemType Directory -Force | Out-Null
@@ -405,7 +425,8 @@ try {
     $sampleFileName = [IO.Path]::Combine($sourceVideoFile.DirectoryName, [IO.Path]::Combine($workingDirectory, "$($sourceVideoFile.BaseName)[sample]$($sourceVideoFile.Extension)"))
     $sourceVideoFile = if (Test-Path -LiteralPath $sampleFileName -PathType Leaf) {
         Get-Item -LiteralPath $sampleFileName
-    } else {
+    }
+    else {
         Get-Item -LiteralPath (Copy-VideoFragments -InputFile $sourceVideoFile -OutputFile $sampleFileName -FragmentCount 10 -FragmentDuration 12).OutputFile
     }
 
@@ -413,8 +434,13 @@ try {
     $sourceVideoInfo = Get-VideoStatsAI -VideoFilePath $sourceVideoFile.FullName
     
     # Get cropping parameters
-    $cropParams = Get-VideoCropParametersAC $sourceVideoFile.FullName -Round 2
-    Write-Log -Message "Cropping parameters: left: $($cropParams.Left); right: $($cropParams.Right); top: $($cropParams.Top); bottom: $($cropParams.Bottom)" -Severity Info
+    if ($CropParameters -and $CropParameters.Left -ne 0 -and $CropParameters.Right -ne 0 -and $CropParameters.Top -ne 0 -and $CropParameters.Bottom -ne 0) {
+        $cropParams = $CropParameters
+        Write-Log -Message "Manual specified cropping parameters: left: $($cropParams.Left); right: $($cropParams.Right); top: $($cropParams.Top); bottom: $($cropParams.Bottom)" -Severity Info
+    } else {
+        $cropParams = Get-VideoCropParametersAC $sourceVideoFile.FullName -Round 2
+        Write-Log -Message "Automatic detected cropping parameters: left: $($cropParams.Left); right: $($cropParams.Right); top: $($cropParams.Top); bottom: $($cropParams.Bottom)" -Severity Info
+    }
 
     # Generate frame server script
     $frameServerScriptPath = Join-Path $workingDirectory "$($sourceVideoFile.BaseName).$($FrameServer -eq 'VapourSynth' ? 'vpy' : 'avs')"
@@ -425,7 +451,6 @@ try {
         -ServerType $FrameServer `
         -CropParams $cropParams
 
-    
     $encodingResults = [System.Collections.Generic.List[EncodingResult]]::new()
     $testCurrent = 0
     $reportPath = Join-Path -Path $workingDirectory -ChildPath "$($sourceVideoFile.BaseName)_report.csv"
@@ -463,6 +488,7 @@ try {
             }
         }
     }
+
     # Generate report
     $frameCount = [math]::Round($sourceVideoInfo.FrameRate * $SampleDurationSeconds)
     $reportHeader = @"
