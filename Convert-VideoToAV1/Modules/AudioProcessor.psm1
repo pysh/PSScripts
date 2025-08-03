@@ -1,66 +1,118 @@
 <#
 .SYNOPSIS
-    Audio processing module
+    Модуль для обработки аудио с параллельной конвертацией
 #>
 
-function Convert-AudioToOpus {
+function ConvertTo-OpusAudio {
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [hashtable]$Job,
-        [switch]$KeepTempFlac = $false
+        
+        [switch]$KeepTempFiles = $false,
+        [int]$ParallelThreads = 10
     )
 
-    $audioTracks = Get-AudioMetadata -VideoFilePath $Job.VideoPath
-    $Job.AudioOutputs = @()
-    
-    foreach ($track in $audioTracks) {
+    try {
+        Write-Log "Начало обработки аудиодорожек" -Severity Information -Category 'Audio'
+        $audioTracks = Get-AudioTrackInfo -VideoFilePath $Job.VideoPath
+        $Job.AudioOutputs = [System.Collections.Generic.List[object]]::new()
         $audioPath = Join-Path -Path $Job.WorkingDir -ChildPath "audio"
-        # $opusOutput = Join-Path -Path $audioPath -ChildPath "$($Job.BaseName).track$(([int]$track.Index).ToString('d2')).opus"
-        $opusOutput = Join-Path -Path $audioPath -ChildPath ("aID{0}_[{1}]_{{`{2`}}}{3}{4}.opus" -f $(([int]$track.Index).ToString('d2')), $track.Language, $track.Title,($track.Default ? '+' : '-'), ($track.Forced ? 'Forced' : ''))
         
-        #"$($Job.BaseName).track$(([int]$track.Index).ToString('d2')).opus"
-        $tempAudio = [IO.Path]::ChangeExtension($opusOutput, "flac") #Join-Path -Path $Job.WorkingDir -ChildPath "$($Job.BaseName).track$($track.Index).flac"
-        if (-not (Test-Path -LiteralPath $audioPath -PathType Container)) {New-Item -Path $audioPath -ItemType Directory | Out-Null}
-        if (-not (Test-Path -LiteralPath $opusOutput -PathType Leaf)) {
-            #$outExtension = switch $track.CodecName {}
-            # Extract audio track
-            Write-Log -Message "Converting track #$($track.Index) from $($Job.VideoPath) to ${tempAudio}..." -Severity Info -Category "AudioProcessor"
-            $ffmpegParams = @(
-                "-y", "-hide_banner", "-nostats", "-loglevel", "error"
-                "-i", $Job.VideoPath
-                "-map", "0:a:$($track.Index-1)"
-                "-c:a", "$(if ($track.CodecName -eq 'flac') {'copy'} else {'flac'})"
-                $tempAudio
+        if (-not (Test-Path -LiteralPath $audioPath -PathType Container)) {
+            New-Item -Path $audioPath -ItemType Directory -Force | Out-Null
+            Write-Log "Создана директория для аудиофайлов: $audioPath" -Severity Verbose -Category 'Audio'
+        }
+
+        # Параллельная обработка аудиодорожек
+        Write-Log "Начало параллельной конвертации в Opus (потоков: $ParallelThreads)" -Severity Information -Category 'Audio'
+        $tracks = $audioTracks | Sort-Object {$_.Index} | ForEach-Object -Parallel {
+            $track = $_
+            $audioPath = $using:audioPath
+            $global:VideoTools = $using:global:VideoTools
+            $KeepTempFiles = $using:KeepTempFiles
+            $Job = $using:Job
+
+            $opusOutput = Join-Path -Path $audioPath -ChildPath (
+                "aID{0}_[{1}]_{{`{2`}}}{3}{4}.opus" -f 
+                ([int]$track.Index).ToString('d2'),
+                $track.Language,
+                $track.Title,
+                ($track.Default ? '+' : '-'),
+                ($track.Forced ? 'Forced' : '')
             )
-            & $global:VideoTools.FFmpeg $ffmpegParams
-        
-            # Convert to Opus
-            $bitRate = switch ($track.Channels) {
-                { $_ -le 2 } { "160"; break }
-                { $_ -le 6 } { "320"; break }
-                default { "384" }
+            
+            if (-not (Test-Path -LiteralPath $opusOutput -PathType Leaf)) {
+                $tempAudio = [IO.Path]::ChangeExtension($opusOutput,"tmp.flac")
+                
+                try {
+                    # Извлечение аудиодорожки
+                    $ffmpegParams = @(
+                        "-y", "-hide_banner", "-loglevel", "error",
+                        "-i", $Job.VideoPath,
+                        "-map", "0:a:$($track.Index-1)",
+                        "-c:a", "flac",
+                        $tempAudio
+                    )
+                    
+                    & $global:VideoTools.FFmpeg $ffmpegParams
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Ошибка извлечения аудио (код $LASTEXITCODE)"
+                    }
+
+                    # Конвертация в Opus
+                    $bitRate = switch ($track.Channels) {
+                        { $_ -le 2 } { "160"; break }
+                        { $_ -le 6 } { "320"; break }
+                        default      { "384" }
+                    }
+                    
+                    $opusParams = @(
+                        "--quiet", "--vbr", "--bitrate", $bitRate
+                        $(if ($track.Title) { "--title", "$($track.Title)" })
+                        $(if ($track.Language) { "--comment", "language=$($track.Language)" })
+                        $tempAudio, $opusOutput
+                    )
+                    
+                    & $global:VideoTools.OpusEnc @opusParams
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Ошибка кодирования Opus (код $LASTEXITCODE)"
+                    }
+                    Write-Host "Создана аудиодорожка: $_"
+                }
+                finally {
+                    if (-not $KeepTempFiles -and (Test-Path -LiteralPath $tempAudio)) {
+                        Remove-Item -LiteralPath $tempAudio -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            } else {
+                Write-Host "Аудио существует, пропускаем: $_"
             }
-            $opusParams = @(
-                "--quiet", "--vbr", "--bitrate", $bitRate
-                $(if ($track.Title) { "--title", "$($track.Title)" })
-                $(if ($track.Language) { "--comment", "language=$($track.Language)" })
-                # $(if ($track.Forced) { "--comment", "forced=1" })
-                # $(if ($track.Default) { "--comment", "default=1" })
-                $tempAudio, $opusOutput
-            )
-            Write-Log -Message "Converting ${tempAudio} to ${opusOutput}..." -Severity Info -Category "AudioProcessor"
-            & $global:VideoTools.OpusEnc @opusParams | Out-Null
+
+            # Возвращаем объект с полной информацией о дорожке
+            [PSCustomObject]@{
+                Path     = $opusOutput
+                Index    = $track.Index
+                Language = $track.Language
+                Title    = $track.Title
+                Default  = $track.Default
+                Forced   = $track.Forced
+                Channels = $track.Channels
+                Codec    = "opus"
+            }
+        } -ThrottleLimit $ParallelThreads
+        $tracks | Sort-Object {$_.Index} | ForEach-Object {
+            $Job.AudioOutputs.Add($_)
+            $Job.TempFiles.Add($_.Path)
         }
-        $Job.AudioOutputs += $opusOutput
-        if ($KeepTempFlac) {
-            $Job.TempFiles += $tempAudio
-        } else {
-            Remove-Item -LiteralPath $tempAudio -Force -ProgressAction SilentlyContinue | Out-Null
-        }
-        $Job.TempFiles += $opusOutput
+
+        Write-Log "Успешно обработано $($Job.AudioOutputs.Count) аудиодорожек" -Severity Success -Category 'Audio'
+        return $Job
     }
-    
-    return $Job
+    catch {
+        Write-Log "Ошибка при обработке аудио: $_" -Severity Error -Category 'Audio'
+        throw
+    }
 }
 
-Export-ModuleMember -Function Convert-AudioToOpus
+Export-ModuleMember -Function ConvertTo-OpusAudio

@@ -1,109 +1,145 @@
 <#
 .SYNOPSIS
-    Utility functions module
+    Модуль вспомогательных функций
 #>
 
-function Get-AudioMetadata {
+function Get-AudioTrackInfo {
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [string]$VideoFilePath
     )
 
-    $originalEncoding = [Console]::OutputEncoding
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams a `
-        -show_entries stream=index,codec_name,channels:stream_tags=language,title:disposition=default,forced,comment `
-        -of json $VideoFilePath | ConvertFrom-Json
-    [Console]::OutputEncoding = $originalEncoding
-    
-    return $ffprobeOutput.streams | ForEach-Object {
-        [PSCustomObject]@{
-            Index     = $_.index
-            CodecName = $_.codec_name
-            Channels  = $_.channels
-            Language  = $_.tags.language
-            Title     = $_.tags.title
-            Default   = $_.disposition.default
-            Forced    = $_.disposition.forced
-            Comment   = $_.disposition.comment
+    try {
+        Write-Log "Получение информации об аудиодорожках" -Severity Verbose -Category 'Audio'
+        
+        $originalEncoding = [Console]::OutputEncoding
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        
+        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams a `
+            -show_entries stream=index,codec_name,channels:stream_tags=language,title:disposition=default,forced,comment `
+            -of json $VideoFilePath | ConvertFrom-Json
+        
+        [Console]::OutputEncoding = $originalEncoding
+        
+        $result = $ffprobeOutput.streams | ForEach-Object {
+            [PSCustomObject]@{
+                Index     = $_.index
+                CodecName = $_.codec_name
+                Channels  = $_.channels
+                Language  = $_.tags.language
+                Title     = $_.tags.title
+                Default   = $_.disposition.default -eq 1
+                Forced    = $_.disposition.forced -eq 1
+                Comment   = $_.disposition.comment
+            }
         }
+        
+        Write-Log "Найдено $($result.Count) аудиодорожек" -Severity Information -Category 'Audio'
+        return $result
+    }
+    catch {
+        Write-Log "Ошибка при получении информации об аудиодорожках: $_" -Severity Error -Category 'Audio'
+        throw
     }
 }
 
-function Cleanup-FailedJob {
+function Remove-TemporaryFiles {
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [hashtable]$Job
     )
 
-    foreach ($file in $Job.TempFiles) {
-        if (Test-Path -LiteralPath $file) {
-            Remove-Item -LiteralPath $file -Force -Recurse -ErrorAction SilentlyContinue
+    try {
+        Write-Log "Очистка временных файлов ($($Job.TempFiles.Count) элементов)" -Severity Information -Category 'Cleanup'
+        $removedCount = 0
+        
+        foreach ($file in $Job.TempFiles) {
+            try {
+                if (Test-Path -LiteralPath $file -PathType Leaf) {
+                    Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+                    $removedCount++
+                }
+                elseif (Test-Path -LiteralPath $file -PathType Container) {
+                    Remove-Item -LiteralPath $file -Force -Recurse -ErrorAction SilentlyContinue
+                    $removedCount++
+                }
+            }
+            catch {
+                Write-Log "Не удалось удалить временный файл ${file}: $_" -Severity Warning -Category 'Cleanup'
+            }
         }
+        
+        Write-Log "Удалено $removedCount временных файлов" -Severity Information -Category 'Cleanup'
+    }
+    catch {
+        Write-Log "Ошибка при очистке временных файлов: $_" -Severity Error -Category 'Cleanup'
     }
 }
 
-function Get-VSVideoInfo {
+function Get-VideoScriptInfo {
+    [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
-        [string]$VpyPath
+        [Parameter(Mandatory)]
+        [string]$ScriptPath
     )
 
-    # Получаем информацию через vspipe --info
-    $vspInfo = (& vspipe --info $VpyPath 2>&1)
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Ошибка выполнения vspipe: $vspInfo"
-        return $null
-    }
-
-    # Регулярное выражение для разбора строк "Key: Value"
-    $regexpString = '^(?<name>.*?):\s*(?<value>.*)$'
-
-    # Создаём хеш-таблицу и заполняем её
-    $infoHash = @{}
-    $vspInfo | ForEach-Object {
-        if ($_ -match $regexpString) {
-            $infoHash[$Matches.name] = $Matches.value
+    try {
+        Write-Log "Получение информации о VapourSynth скрипте" -Severity Verbose -Category 'Video'
+        $vspInfo = (& vspipe --info $ScriptPath 2>&1)
+        
+        if ($LASTEXITCODE -ne 0) {
+            throw "Ошибка выполнения vspipe: $vspInfo"
         }
+
+        $infoHash = @{}
+        $vspInfo | ForEach-Object {
+            if ($_ -match '^(?<name>.*?):\s*(?<value>.*)$') {
+                $infoHash[$Matches.name] = $Matches.value
+            }
+        }
+
+        Write-Log "Информация о скрипте получена" -Severity Debug -Category 'Video'
+        return [PSCustomObject]$infoHash
     }
-
-    # Преобразуем в объект и возвращаем
-    return [PSCustomObject]$infoHash
+    catch {
+        Write-Log "Ошибка при получении информации о скрипте VapourSynth: $_" -Severity Error -Category 'Video'
+        throw
+    }
 }
-
-function Get-VideoCropParametersAC2 {
+<# 
+function Get-VideoCropParameters {
+    [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory)]
         [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
         [string]$InputFile,
 
-        [Parameter(Mandatory = $false)]
         [ValidateRange(0, [int]::MaxValue)]
         [int]$ThresholdBegin = 0,
 
-        [Parameter(Mandatory = $false)]
         [ValidateRange(0, [int]::MaxValue)]
         [int]$ThresholdEnd = 0,
 
-        [Parameter(Mandatory = $false)]
         [ValidateRange(0, [int]::MaxValue)]
         [int]$LuminanceThreshold = 1000,
 
-        [Parameter(Mandatory = $false)]
         [ValidateSet(2, 4, 8, 16, 32)]
         [int]$Round = 2
     )
     
-    # Функция для округления до ближайшего кратного значения
     function RoundToNearestMultiple {
         param([int]$Value, [int]$Multiple)
         if ($Multiple -eq 0) { return $Value }
         return [Math]::Round($Value / $Multiple) * $Multiple
     }
 
-    $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
-    
-    @"
+    try {
+        Write-Log "Определение параметров обрезки для файла: $InputFile" -Severity Information -Category 'Video'
+        $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
+        
+        @" 
 import vapoursynth as vs
 core = vs.core
 
@@ -157,13 +193,6 @@ if primaries <= 0 or primaries >= 23:
         PRIMARIES['BT709']
     )
 
-# Display color parameters
-#clip = core.text.Text(
-#    clip, 
-#    text='matrix: %d; transfer: %d; primaries: %d' % (matrix, transfer, primaries),
-#    scale=10
-#)
-
 # Process video
 clip = clip.resize.Bicubic(
     matrix_in=matrix,
@@ -175,36 +204,121 @@ clip = clip.libp2p.Pack()
 clip.set_output()
 "@ | Set-Content -Path $tmpScriptFile -Force
 
-    $AutoCropPath = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe'
-    $acFrameCount = 2
-    $acFrameInterval = 400
-    
-    try {
+        $AutoCropPath = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe'
+        $acFrameCount = 2
+        $acFrameInterval = 400
+        
+        Write-Log "Запуск AutoCrop для определения обрезки" -Severity Verbose -Category 'Video'
         $autocropOutput = & $AutoCropPath $tmpScriptFile $acFrameCount $acFrameInterval 144 144 $LuminanceThreshold 0
         
-        # Получаем последнюю строку вывода (с параметрами обрезки)
-        $cropLine = $autocropOutput | Select-Object -Last 1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Ошибка выполнения AutoCrop (код $LASTEXITCODE)"
+        }
         
-        # Разбиваем строку по запятым и преобразуем в числа
+        $cropLine = $autocropOutput | Select-Object -Last 1
         $cropParams = $cropLine -split ',' | ForEach-Object { [int]$_ }
 
-        # Округляем значения до кратных $Round
-        $roundedLeft = RoundToNearestMultiple -Value $cropParams[0] -Multiple $Round
-        $roundedTop = RoundToNearestMultiple -Value $cropParams[1] -Multiple $Round
-        $roundedRight = RoundToNearestMultiple -Value $cropParams[2] -Multiple $Round
-        $roundedBottom = RoundToNearestMultiple -Value $cropParams[3] -Multiple $Round
-
-        # Создаем объект с параметрами обрезки
-        return [PSCustomObject]@{
-            Left           = $roundedLeft
-            Top            = $roundedTop
-            Right          = $roundedRight
-            Bottom         = $roundedBottom
+        $result = [PSCustomObject]@{
+            Left           = RoundToNearestMultiple -Value $cropParams[0] -Multiple $Round
+            Top            = RoundToNearestMultiple -Value $cropParams[1] -Multiple $Round
+            Right          = RoundToNearestMultiple -Value $cropParams[2] -Multiple $Round
+            Bottom         = RoundToNearestMultiple -Value $cropParams[3] -Multiple $Round
             OriginalLeft   = $cropParams[0]
             OriginalTop    = $cropParams[1]
             OriginalRight  = $cropParams[2]
             OriginalBottom = $cropParams[3]
         }
+        
+        Write-Log "Параметры обрезки определены: $result" -Severity Information -Category 'Video'
+        return $result
+    }
+    catch {
+        Write-Log "Ошибка при определении параметров обрезки: $_" -Severity Error -Category 'Video'
+        throw
+    }
+    finally {
+        if (Test-Path -LiteralPath $tmpScriptFile) {
+            Remove-Item -LiteralPath $tmpScriptFile -ErrorAction SilentlyContinue
+        }
+    }
+}
+#>
+
+function Get-VideoCropParameters {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
+        [string]$InputFile,
+
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$ThresholdBegin = 0,
+
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$ThresholdEnd = 0,
+
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$LuminanceThreshold = 1000,
+
+        [ValidateSet(2, 4, 8, 16, 32)]
+        [int]$Round = 2
+    )
+    
+    function RoundToNearestMultiple {
+        param([int]$Value, [int]$Multiple)
+        if ($Multiple -eq 0) { return $Value }
+        return [Math]::Round($Value / $Multiple) * $Multiple
+    }
+
+    try {
+        Write-Log "Определение параметров обрезки для файла: $InputFile" -Severity Information -Category 'Video'
+        $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
+        
+        # Получаем путь к директории модуля
+        $moduleDir = [System.IO.Path]::GetDirectoryName($MyInvocation.MyCommand.Module.Path)
+        $templatePath = Join-Path -Path $moduleDir -ChildPath "AutoCropTemplate.vpy"
+        
+        if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
+            throw "Файл шаблона VapourSynth не найден: $templatePath"
+        }
+
+        # Читаем шаблон и заменяем плейсхолдер
+        $scriptContent = Get-Content -LiteralPath $templatePath -Raw
+        $scriptContent = $scriptContent -replace '\{input_file\}', $InputFile
+
+        Set-Content -LiteralPath $tmpScriptFile -Value $scriptContent -Force
+
+        $AutoCropPath = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe'
+        $acFrameCount = 2
+        $acFrameInterval = 400
+        
+        Write-Log "Запуск AutoCrop для определения обрезки" -Severity Verbose -Category 'Video'
+        $autocropOutput = & $AutoCropPath $tmpScriptFile $acFrameCount $acFrameInterval 144 144 $LuminanceThreshold 0
+        
+        if ($LASTEXITCODE -ne 0) {
+            throw "Ошибка выполнения AutoCrop (код $LASTEXITCODE)"
+        }
+        
+        $cropLine = $autocropOutput | Select-Object -Last 1
+        $cropParams = $cropLine -split ',' | ForEach-Object { [int]$_ }
+
+        $result = [PSCustomObject]@{
+            Left           = RoundToNearestMultiple -Value $cropParams[0] -Multiple $Round
+            Top            = RoundToNearestMultiple -Value $cropParams[1] -Multiple $Round
+            Right          = RoundToNearestMultiple -Value $cropParams[2] -Multiple $Round
+            Bottom         = RoundToNearestMultiple -Value $cropParams[3] -Multiple $Round
+            OriginalLeft   = $cropParams[0]
+            OriginalTop    = $cropParams[1]
+            OriginalRight  = $cropParams[2]
+            OriginalBottom = $cropParams[3]
+        }
+        
+        Write-Log "Параметры обрезки определены: $result" -Severity Information -Category 'Video'
+        return $result
+    }
+    catch {
+        Write-Log "Ошибка при определении параметров обрезки: $_" -Severity Error -Category 'Video'
+        throw
     }
     finally {
         if (Test-Path -LiteralPath $tmpScriptFile) {
@@ -219,8 +333,8 @@ function Write-Log {
         [Parameter(Mandatory)]
         [string]$Message,
             
-        [ValidateSet('Debug', 'Info', 'Warning', 'Error', 'Success')]
-        [string]$Severity = 'Info',
+        [ValidateSet('Debug', 'Information', 'Warning', 'Error', 'Success', 'Verbose')]
+        [string]$Severity = 'Information',
 
         [string]$Category,
             
@@ -228,26 +342,28 @@ function Write-Log {
     )
 
     $timestamp = [DateTime]::Now.ToString("yyyy-MM-dd HH:mm:ss.fff")
-    $logMessage = "[$timestamp] [$Severity]$(if($Category){ " [$Category]" })`t$Message"
 
-    $color = switch ($Severity) {
-        'Success' { 'Green' }
-        'Debug'   { 'DarkGray' }
-        'Info'    { 'Cyan' }
-        'Warning' { 'Yellow' }
-        'Error'   { 'Red' }
-        default   { 'White' }
+    switch ($Severity) {
+        'Success'     { $color = 'Green';       $logSeverity = 'OK!' }
+        'Debug'       { $color = 'DarkGray';    $logSeverity = 'DBG' }
+        'Information' { $color = 'Cyan';        $logSeverity = 'INF' }
+        'Verbose'     { $color = 'DarkMagenta'; $logSeverity = 'VRB' }
+        'Warning'     { $color = 'Yellow';      $logSeverity = 'WRN' }
+        'Error'       { $color = 'Red';         $logSeverity = 'ERR' }
+        default       { $color = 'White';       $logSeverity = '---' }
     }
+    
+    $logMessage = "[$timestamp] [$logSeverity]$(if($Category){ " [$Category]" })`t$Message"
 
+    $params = @{
+        ForegroundColor = $color
+    }
+    
     if ($NoNewLine) {
-        Write-Host $logMessage -ForegroundColor $color -NoNewline
-    }
-    else {
-        Write-Host $logMessage -ForegroundColor $color
+        $params['NoNewline'] = $true
     }
 
-    # Дополнительное логирование в файл или систему можно добавить здесь
+    Write-Host $logMessage @params
 }
 
-
-Export-ModuleMember -Function Get-AudioMetadata, Get-VideoCropParametersAC2, Cleanup-FailedJob, Get-VSVideoInfo, Write-Log
+Export-ModuleMember -Function Get-AudioTrackInfo, Remove-TemporaryFiles, Get-VideoScriptInfo, Get-VideoCropParameters, Write-Log
