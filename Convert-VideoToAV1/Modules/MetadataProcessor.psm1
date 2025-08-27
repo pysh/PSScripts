@@ -45,7 +45,8 @@ function Invoke-ProcessMetaData {
         $nfoFile = [IO.Path]::ChangeExtension($Job.VideoPath, "nfo")
         if (Test-Path -LiteralPath $nfoFile -PathType Leaf) {
             $nfoTagsFile = Join-Path -Path $Job.WorkingDir -ChildPath "$($Job.BaseName)_nfo_tags.xml"
-            ConvertFrom-NfoToXml -NfoFile $nfoFile -OutputFile $nfoTagsFile
+            $fields = ConvertFrom-NfoToXml -NfoFile $nfoFile -OutputFile $nfoTagsFile
+            $Job.NFOFields = $fields
             $Job.NfoTags = $nfoTagsFile
             $Job.TempFiles.Add($nfoTagsFile)
             Write-Log "Конвертирован NFO файл в XML: $nfoTagsFile" -Severity Information -Category 'Metadata'
@@ -61,7 +62,6 @@ function Invoke-ProcessMetaData {
     }
 }
 
-<# 
 function Complete-MediaFile {
     [CmdletBinding()]
     param(
@@ -71,137 +71,27 @@ function Complete-MediaFile {
 
     try {
         Write-Log "Начало создания итогового файла" -Severity Information -Category 'Muxing'
-        $Job.FinalOutput = Join-Path -Path $Job.WorkingDir -ChildPath "$($Job.BaseName)_out.mkv"
-        
-        # Используем StringBuilder для формирования командной строки (для логирования)
-        # $cmdString = [System.Text.StringBuilder]::new()
-        # $null = $cmdString.AppendLine("mkvmerge --output `"$($Job.FinalOutput)`" --no-date `"$($Job.VideoOutput)`"")
-
-        # Используем List[string] для аргументов (лучше для передачи в Process.Start)
-        #$mkvArgs = [System.Collections.Generic.List[string]]::new()
-        $mkvArgs = @(
-            '--output', $Job.FinalOutput
-            '--no-date', $Job.VideoOutput
-            )
-
-        # Аудиодорожки
-        $Job.AudioOutputs | Sort-Object $_ | ForEach-Object { 
-            $mkvArgs += '--no-track-tags'
-            $mkvArgs += @('--language', "0:$($sub.Language)")
-            $mkvArgs += @('--track-name', "0:$($sub.Name)")
-            $mkvArgs += @('--default-track-flag', "0:$(if ($_.Default) {'yes'} else {'no'})")
-            $mkvArgs += @('--forced-display-flag', "0:$(if ($_.Forced) {'yes'} else {'no'})")
-            $mkvArgs += $_
-        }
-
-        # Субтитры с метаданными
-        $trackCounter = 0
-        $subtitleTracks = $Job.Metadata.GetEnumerator() | Sort-Object $_ | Where-Object { $_.Key -match "^Subtitle_\d+" }
-        
-        foreach ($subTrack in $subtitleTracks) {
-            $sub = $subTrack.Value
-            
-            # Добавляем параметры в список аргументов
-            $mkvArgs += @('--language', "0:$($sub.Language)")
-            
-            if ($sub.Name) {
-                # $null = $cmdString.Append(" --track-name 0:`"$($sub.Name)`"")
-                $mkvArgs += @('--track-name', "0:$($sub.Name)")
-            }
-            
-            if ($sub.Default) {
-                # $null = $cmdString.Append(" --default-track-flag $trackCounter:1")
-                $mkvArgs += @('--default-track-flag', "0:yes")
-            }
-            
-            if ($sub.Forced) {
-                # $null = $cmdString.Append(" --forced-display-flag $trackCounter:1")
-                $mkvArgs += @('--forced-display-flag', "0:yes")
-            }
-
-            $mkvArgs += $sub.Path
-            
-            $trackCounter++
-        }
-
-        # Главы
-        $chaptersFile = Join-Path -Path $Job.Metadata.TempDir -ChildPath "$($Job.BaseName)_chapters.xml"
-        if (Test-Path -LiteralPath $chaptersFile -PathType Leaf) {
-            # $null = $cmdString.Append(" --chapters `"$chaptersFile`"")
-            $mkvArgs += @('--chapters', $chaptersFile)
-        }
-
-        # Теги
-        $tagsFile = if ($Job.NfoTags) { $Job.NfoTags } else { Join-Path -Path $Job.Metadata.TempDir -ChildPath "$($Job.BaseName)_tags.xml" }
-        if (Test-Path -LiteralPath $tagsFile -PathType Leaf) {
-            # $null = $cmdString.Append(" --global-tags `"$tagsFile`"")
-            $mkvArgs += @('--global-tags', $tagsFile)
-        }
-
-        # Логируем полную командную строку
-        Write-Log "Выполняемая команда: $($mkvArgs -join ' ')" -Severity Debug -Category 'Muxing'
-
-        # Выполнение mkvmerge
-        & $global:VideoTools.MkvMerge @mkvArgs
-        
-        if ($LASTEXITCODE -ne 0) {
-            throw "Ошибка mkvmerge (код $LASTEXITCODE)"
-        }
-
-        # Обработка вложений
-        foreach ($attach in $Job.Metadata['Attachments']) {
-            if (Test-Path -LiteralPath $attach.Path -PathType Leaf) {
-                $attachArgs = @(
-                    '--attachment-name', $attach.Name,
-                    '--attachment-mime-type', $attach.Mime,
-                    '--add-attachment', $attach.Path
-                )
-                
-                if ($attach.Description) {
-                    $attachArgs += '--attachment-description', $attach.Description
-                }
-                
-                & $global:VideoTools.MkvPropedit $Job.FinalOutput @attachArgs
-            }
-        }
-
-        Write-Log "Файл успешно создан: $($Job.FinalOutput)" -Severity Success -Category 'Muxing'
-    }
-    catch {
-        Write-Log "Ошибка при создании итогового файла: $_" -Severity Error -Category 'Muxing'
-        throw
-    }
-}
-#>
-
-function Complete-MediaFile {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [hashtable]$Job
-    )
-
-    try {
-        Write-Log "Начало создания итогового файла" -Severity Information -Category 'Muxing'
-        $Job.FinalOutput = Join-Path -Path $Job.WorkingDir -ChildPath "$($Job.BaseName)_out.mkv"
         
         $mkvArgs = @(
+            '--ui-language', 'en',
+            '--priority', 'lower',
             '--output', $Job.FinalOutput,
-            '--no-date', $Job.VideoOutput
+            '--no-date', $Job.VideoOutput,
+            '--no-track-tags'
         )
 
-        # Аудиодорожки (каждая в отдельном файле, поэтому трек 0)
+        # Аудиодорожки
         foreach ($audioTrack in $Job.AudioOutputs) {
             $mkvArgs += @(
                 '--language', "0:$($audioTrack.Language)",
-                '--track-name', "0:$($audioTrack.Title)",
+                $(if ($audioTrack.Title) { @('--track-name', "0:$($audioTrack.Title)") }),
                 '--default-track-flag', "0:$(if ($audioTrack.Default) {'yes'} else {'no'})",
                 '--forced-display-flag', "0:$(if ($audioTrack.Forced) {'yes'} else {'no'})",
                 $audioTrack.Path
             )
         }
 
-        # Субтитры (каждый в отдельном файле, поэтому трек 0)
+        # Субтитры
         $subtitleTracks = $Job.Metadata.GetEnumerator() | Where-Object { $_.Key -match "^Subtitle_\d+" } | Sort-Object { [int]($_.Key -replace '\D','') }
         
         foreach ($subTrack in $subtitleTracks) {
@@ -228,10 +118,6 @@ function Complete-MediaFile {
             $mkvArgs += @('--global-tags', $tagsFile)
         }
 
-        $Job.Muxing = @{
-            Arguments = $mkvArgs
-        }
-        $job | ConvertTo-Json -Depth 99 | Out-File -FilePath ([IO.Path]::ChangeExtension($Job.FinalOutput,"json")) -Encoding utf8 -Force
         Write-Log "Выполняемая команда: mkvmerge $($mkvArgs -join ' ')" -Severity Debug -Category 'Muxing'
 
         # Выполнение mkvmerge
@@ -278,7 +164,7 @@ function Invoke-ProcessAttachments {
     foreach ($attachment in $jsonInfo.attachments) {
         try {
             $safeName = [IO.Path]::GetFileName($attachment.file_name) -replace '[^\w\.-]', '_'
-            $outputFile = Join-Path -Path $metadataDir -ChildPath ("attID{0:d2}_$safeName" -f $($attachment.id.ToString('d2')))
+            $outputFile = Join-Path -Path $metadataDir -ChildPath "attach_$($attachment.id)_$safeName"
             & $global:VideoTools.MkvExtract $Job.VideoPath attachments "$($attachment.id):$outputFile" *>$null
 
             if (Test-Path -LiteralPath $outputFile -PathType Leaf) {
@@ -310,14 +196,14 @@ function Invoke-ProcessSubtitles {
             $lang = if ($track.properties.language -eq 'und') { '' } else { $track.properties.language }
             $ext = switch ($track.codec) {
                 'SubStationAlpha' { 'ass' }
-                'HDMV PGS'        { 'sup' }
-                'VobSub'          { 'sub' }
-                default           { 'srt' }
+                'HDMV PGS'       { 'sup' }
+                'VobSub'         { 'sub' }
+                default          { 'srt' }
             }
 
             $subFile = Join-Path -Path $metadataDir -ChildPath (
-                "subID{0}_[{1}]_{{`{2`}}}{3}{4}.{5}" -f 
-                $track.id.ToString('d2'),
+                "sID{0}_[{1}]_{{`{2`}}}{3}{4}.{5}" -f 
+                $track.id,
                 $lang,
                 $track.properties.track_name,
                 ($track.properties.default_track ? '+' : '-'),
@@ -412,6 +298,7 @@ function ConvertFrom-NfoToXml {
 
             $writer.WriteEndElement() # Tags
             $writer.WriteEndDocument()
+            $fields
         }
         finally {
             $writer.Close()

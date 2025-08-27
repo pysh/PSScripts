@@ -17,7 +17,7 @@ function ConvertTo-Av1Video {
 
         if (-not (Test-Path -LiteralPath $Job.VideoOutput -PathType Leaf)) {
             Write-Log "Определение параметров обрезки..." -Severity Verbose -Category 'Video'
-            $Job.CropParams = Get-VideoCropParameters -InputFile $Job.VideoPath -Round 2
+            $Job.CropParams = Get-VideoCropParameters -InputFile $Job.VideoPath
             Write-Log "Параметры обрезки: left=$($Job.CropParams.Left), right=$($Job.CropParams.Right), top=$($Job.CropParams.Top), bottom=$($Job.CropParams.Bottom)" -Severity Verbose -Category 'Video'
         
             # Генерация скрипта VapourSynth
@@ -36,13 +36,26 @@ clip.set_output()
 
             # Получение информации о видео
             $vpyInfo = Get-VideoScriptInfo -ScriptPath $Job.ScriptFile
+            $Job.VPYInfo = $vpyInfo
             Write-Log "Информация о видео: $($vpyInfo | Out-String)" -Severity Verbose -Category 'Video'
 
             # Кодирование видео
             Write-Log "Начало кодирования видео..." -Severity Information -Category 'Video'
             $vspipeArgs = @('-c', 'y4m', $Job.ScriptFile, '-')
-            $encArgs = @('--rc', '0', '--crf', '26', '--preset', '6', '--progress', '2', '--output', $Job.VideoOutput, '--input', '-')
-            
+            $encArgs = @(
+                '--rc', '0',
+                '--crf', $global:Config.Encoding.Video.CRF,
+                '--preset', $global:Config.Encoding.Video.Preset,
+                '--progress', '2',
+                # '--hbd-mds', 2,
+                # '--tune', 0
+                '--output', $Job.VideoOutput,
+                '--input', '-'
+            )
+            $Job.vspipeArgs = $vspipeArgs
+            $Job.encArgs = $encArgs
+            Write-Log -Message "& $($global:VideoTools.VSPipe) $($vspipeArgs -join ' ') | & $($global:VideoTools.SvtAv1Enc) $($encArgs -join ' ')" -Severity Debug -Category 'Encoding'
+
             & $global:VideoTools.VSPipe $vspipeArgs | & $global:VideoTools.SvtAv1Enc $encArgs
             
             if ($LASTEXITCODE -ne 0) {

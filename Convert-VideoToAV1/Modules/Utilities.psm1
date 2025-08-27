@@ -3,6 +3,37 @@
     Модуль вспомогательных функций
 #>
 
+$global:Config = $null
+$global:VideoTools = $null
+
+function Initialize-Configuration {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ConfigPath
+    )
+
+    try {
+        if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
+            throw "Файл конфигурации не найден"
+        }
+
+        $global:Config = Import-PowerShellDataFile -Path $ConfigPath
+        $global:VideoTools = $global:Config.Tools
+
+        # # Создаем временную директорию, если не существует
+        # if (-not (Test-Path -Path $global:Config.Processing.TempDir -PathType Container)) {
+        #     New-Item -Path $global:Config.Processing.TempDir -ItemType Directory -Force | Out-Null
+        # }
+
+        Write-Log "Конфигурация успешно загружена" -Severity Success -Category 'Config'
+    }
+    catch {
+        Write-Log "Ошибка загрузки конфигурации: $_" -Severity Error -Category 'Config'
+        throw
+    }
+}
+
 function Get-AudioTrackInfo {
     [CmdletBinding()]
     param(
@@ -108,25 +139,13 @@ function Get-VideoScriptInfo {
         throw
     }
 }
-<# 
+
 function Get-VideoCropParameters {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)]
         [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
-        [string]$InputFile,
-
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$ThresholdBegin = 0,
-
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$ThresholdEnd = 0,
-
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$LuminanceThreshold = 1000,
-
-        [ValidateSet(2, 4, 8, 16, 32)]
-        [int]$Round = 2
+        [string]$InputFile
     )
     
     function RoundToNearestMultiple {
@@ -139,144 +158,8 @@ function Get-VideoCropParameters {
         Write-Log "Определение параметров обрезки для файла: $InputFile" -Severity Information -Category 'Video'
         $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
         
-        @" 
-import vapoursynth as vs
-core = vs.core
-
-# Constants for better readability
-MATRIX = {
-    'RGB': 0,
-    'BT709': 1,
-    'UNSPEC': 2,
-    'BT470BG': 5,
-    'BT2020_NCL': 9
-}
-
-TRANSFER = {
-    'BT709': 1,
-    'BT470BG': 5,
-    'ST2084': 16
-}
-
-PRIMARIES = {
-    'BT709': 1,
-    'BT470BG': 5,
-    'BT2020': 9
-}
-
-# Load source
-clip = core.lsmas.LWLibavSource(r"$InputFile")
-
-# Get frame properties
-props = clip.get_frame(0).props
-
-# Determine matrix, transfer and primaries
-matrix = props.get('_Matrix', MATRIX['UNSPEC'])
-if matrix == MATRIX['UNSPEC'] or matrix >= 15:
-    matrix = MATRIX['RGB'] if clip.format.id == vs.RGB24 else (
-        MATRIX['BT709'] if clip.height > 576 else MATRIX['BT470BG']
-    )
-
-transfer = props.get('_Transfer', TRANSFER['BT709'])
-if transfer <= 0 or transfer >= 19:
-    transfer = (
-        TRANSFER['BT470BG'] if matrix == MATRIX['BT470BG'] else
-        TRANSFER['ST2084'] if matrix == MATRIX['BT2020_NCL'] else
-        TRANSFER['BT709']
-    )
-
-primaries = props.get('_Primaries', PRIMARIES['BT709'])
-if primaries <= 0 or primaries >= 23:
-    primaries = (
-        PRIMARIES['BT470BG'] if matrix == MATRIX['BT470BG'] else
-        PRIMARIES['BT2020'] if matrix == MATRIX['BT2020_NCL'] else
-        PRIMARIES['BT709']
-    )
-
-# Process video
-clip = clip.resize.Bicubic(
-    matrix_in=matrix,
-    transfer_in=transfer,
-    primaries_in=primaries,
-    format=vs.RGB24
-)
-clip = clip.libp2p.Pack()
-clip.set_output()
-"@ | Set-Content -Path $tmpScriptFile -Force
-
-        $AutoCropPath = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe'
-        $acFrameCount = 2
-        $acFrameInterval = 400
-        
-        Write-Log "Запуск AutoCrop для определения обрезки" -Severity Verbose -Category 'Video'
-        $autocropOutput = & $AutoCropPath $tmpScriptFile $acFrameCount $acFrameInterval 144 144 $LuminanceThreshold 0
-        
-        if ($LASTEXITCODE -ne 0) {
-            throw "Ошибка выполнения AutoCrop (код $LASTEXITCODE)"
-        }
-        
-        $cropLine = $autocropOutput | Select-Object -Last 1
-        $cropParams = $cropLine -split ',' | ForEach-Object { [int]$_ }
-
-        $result = [PSCustomObject]@{
-            Left           = RoundToNearestMultiple -Value $cropParams[0] -Multiple $Round
-            Top            = RoundToNearestMultiple -Value $cropParams[1] -Multiple $Round
-            Right          = RoundToNearestMultiple -Value $cropParams[2] -Multiple $Round
-            Bottom         = RoundToNearestMultiple -Value $cropParams[3] -Multiple $Round
-            OriginalLeft   = $cropParams[0]
-            OriginalTop    = $cropParams[1]
-            OriginalRight  = $cropParams[2]
-            OriginalBottom = $cropParams[3]
-        }
-        
-        Write-Log "Параметры обрезки определены: $result" -Severity Information -Category 'Video'
-        return $result
-    }
-    catch {
-        Write-Log "Ошибка при определении параметров обрезки: $_" -Severity Error -Category 'Video'
-        throw
-    }
-    finally {
-        if (Test-Path -LiteralPath $tmpScriptFile) {
-            Remove-Item -LiteralPath $tmpScriptFile -ErrorAction SilentlyContinue
-        }
-    }
-}
-#>
-
-function Get-VideoCropParameters {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
-        [string]$InputFile,
-
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$ThresholdBegin = 0,
-
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$ThresholdEnd = 0,
-
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$LuminanceThreshold = 1000,
-
-        [ValidateSet(2, 4, 8, 16, 32)]
-        [int]$Round = 2
-    )
-    
-    function RoundToNearestMultiple {
-        param([int]$Value, [int]$Multiple)
-        if ($Multiple -eq 0) { return $Value }
-        return [Math]::Round($Value / $Multiple) * $Multiple
-    }
-
-    try {
-        Write-Log "Определение параметров обрезки для файла: $InputFile" -Severity Information -Category 'Video'
-        $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
-        
-        # Получаем путь к директории модуля
-        $moduleDir = [System.IO.Path]::GetDirectoryName($MyInvocation.MyCommand.Module.Path)
-        $templatePath = Join-Path -Path $moduleDir -ChildPath "AutoCropTemplate.vpy"
+        # Получаем путь к шаблону из конфига
+        $templatePath = $global:Config.Templates.VapourSynth.AutoCrop
         
         if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
             throw "Файл шаблона VapourSynth не найден: $templatePath"
@@ -288,12 +171,12 @@ function Get-VideoCropParameters {
 
         Set-Content -LiteralPath $tmpScriptFile -Value $scriptContent -Force
 
-        $AutoCropPath = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe'
+        $AutoCropPath = $global:VideoTools.AutoCrop
         $acFrameCount = 2
         $acFrameInterval = 400
         
         Write-Log "Запуск AutoCrop для определения обрезки" -Severity Verbose -Category 'Video'
-        $autocropOutput = & $AutoCropPath $tmpScriptFile $acFrameCount $acFrameInterval 144 144 $LuminanceThreshold 0
+        $autocropOutput = & $AutoCropPath $tmpScriptFile $acFrameCount $acFrameInterval 144 144 $global:Config.Processing.AutoCropThreshold 0
         
         if ($LASTEXITCODE -ne 0) {
             throw "Ошибка выполнения AutoCrop (код $LASTEXITCODE)"
@@ -303,10 +186,10 @@ function Get-VideoCropParameters {
         $cropParams = $cropLine -split ',' | ForEach-Object { [int]$_ }
 
         $result = [PSCustomObject]@{
-            Left           = RoundToNearestMultiple -Value $cropParams[0] -Multiple $Round
-            Top            = RoundToNearestMultiple -Value $cropParams[1] -Multiple $Round
-            Right          = RoundToNearestMultiple -Value $cropParams[2] -Multiple $Round
-            Bottom         = RoundToNearestMultiple -Value $cropParams[3] -Multiple $Round
+            Left           = RoundToNearestMultiple -Value $cropParams[0] -Multiple $global:Config.Encoding.Video.CropRound
+            Top            = RoundToNearestMultiple -Value $cropParams[1] -Multiple $global:Config.Encoding.Video.CropRound
+            Right          = RoundToNearestMultiple -Value $cropParams[2] -Multiple $global:Config.Encoding.Video.CropRound
+            Bottom         = RoundToNearestMultiple -Value $cropParams[3] -Multiple $global:Config.Encoding.Video.CropRound
             OriginalLeft   = $cropParams[0]
             OriginalTop    = $cropParams[1]
             OriginalRight  = $cropParams[2]
@@ -366,4 +249,224 @@ function Write-Log {
     Write-Host $logMessage @params
 }
 
-Export-ModuleMember -Function Get-AudioTrackInfo, Remove-TemporaryFiles, Get-VideoScriptInfo, Get-VideoCropParameters, Write-Log
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<#
+.SYNOPSIS
+    Вычисляет метрики качества видео VMAF и XPSNR между искаженным и эталонным видео.
+.DESCRIPTION
+    Объединяет функциональность VMAF и XPSNR в единый вызов с поддержкой:
+    - Обрезки по времени и области (crop)
+    - Многопоточной обработки
+    - Разных моделей VMAF
+    - Настройки порогов и округления
+.PARAMETER DistortedPath
+    Путь к тестируемому (искаженному) видеофайлу.
+.PARAMETER ReferencePath
+    Путь к эталонному видеофайлу.
+.PARAMETER Metrics
+    Какие метрики рассчитывать ('VMAF', 'XPSNR' или 'Both').
+.PARAMETER Crop
+    Параметры обрезки видео (Left, Right, Top, Bottom).
+.PARAMETER TrimStartSeconds
+    Начальная точка обрезки в секундах.
+.PARAMETER DurationSeconds
+    Длительность сегмента для анализа.
+.PARAMETER ModelVersion
+    Версия модели VMAF ('vmaf_4k_v0.6.1' или 'vmaf_v0.6.1').
+.PARAMETER VMAFThreads
+    Количество потоков для расчета VMAF.
+.PARAMETER Subsample
+    Частота субсэмплинга кадров (1 = все кадры).
+.PARAMETER VMAFLogPath
+    Путь для сохранения детального отчета VMAF.
+.PARAMETER XPSNRPoolMethod
+    Метод агрегации XPSNR ('mean' или 'harmonic_mean').
+.EXAMPLE
+    Get-VideoQualityMetrics -ReferencePath "original.mkv" -DistortedPath "encoded.mp4" -Metrics Both
+#>
+function Get-VideoQualityMetrics {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateScript({Test-Path -LiteralPath $_})]
+        [string]$DistortedPath,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateScript({Test-Path -LiteralPath $_})]
+        [string]$ReferencePath,
+
+        [ValidateSet('VMAF', 'XPSNR', 'Both')]
+        [string]$Metrics = 'Both',
+
+        [PSCustomObject]$Crop = @{
+            Left   = 0
+            Right  = 0
+            Top    = 0
+            Bottom = 0
+            CropDistVido = $false
+        },
+
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$TrimStartSeconds = 0,
+
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$DurationSeconds = 0,
+
+        [string]$ModelVersion = 'vmaf_4k_v0.6.1',
+
+        [ValidateRange(1, 64)]
+        [int]$VMAFThreads = [Environment]::ProcessorCount,
+
+        [ValidateRange(1, 100)]
+        [int]$Subsample = 3,
+
+        [string]$VMAFLogPath,
+
+        [ValidateSet('mean', 'harmonic_mean')]
+        [string]$VMAFPoolMethod = 'harmonic_mean'
+
+        # [ValidateRange(0, 255)]
+        # [int]$BlackThreshold = 24,
+
+        # [ValidateSet(2, 4, 8, 16, 32)]
+        # [int]$Round = 4
+    )
+
+    # Базовые фильтры для временных меток
+    $baseFilters = "settb=AVTB,setpts=PTS-STARTPTS"
+
+    # Собираем фильтры обрезки
+    $cropFilterReference = if ($Crop.Left -or $Crop.Right -or $Crop.Top -or $Crop.Bottom) {
+        "crop=w=iw-$($Crop.Left)-$($Crop.Right):h=ih-$($Crop.Top)-$($Crop.Bottom):x=$($Crop.Left):y=$($Crop.Top)"
+    }
+    if ($Crop.CropDistVideo) { $cropFilterDistortion=$cropFilterReference }
+
+    # Фильтры обрезки по времени
+    $trimFilter = if ($TrimStartSeconds -gt 0 -or $DurationSeconds -gt 0) {
+        "trim=start=${TrimStartSeconds}:duration=${DurationSeconds}"
+    }
+
+    # Комбинируем все фильтры
+    $commonFilters = (@($trimFilter, $baseFilters) -join ',').Trim(',')
+
+    # Результаты
+    $results = @{
+        VMAF  = $null
+        XPSNR = $null
+    }
+
+    # Общий фильтр для обоих потоков
+    $filterChain = @(
+        "[0:v]$(if($cropFilterDistortion) { "${cropFilterDistortion}," })$commonFilters[dist];",
+        "[1:v]$(if($cropFilterReference) { "${cropFilterReference}," })$commonFilters[ref];"
+    ) -join ''
+
+    # Расчет VMAF
+    if ($Metrics -in ('Both', 'VMAF')) {
+        $vmafParams = @(
+            "eof_action=endall",
+            "n_threads=$VMAFThreads",
+            "n_subsample=$Subsample",
+            "model=version=$ModelVersion"
+            "pool=$VMAFPoolMethod"
+        )
+        
+        if ($VMAFLogPath) {
+            $vmafParams += "log_path='$($VMAFLogPath.Replace('\', '\\'))'"
+            $vmafParams += "log_fmt=json"
+        }
+
+        $vmafFilter = "[dist][ref]libvmaf=$($vmafParams -join ':')"
+        
+        $ffmpegArgs = @(
+            "-hide_banner", "-y", "-nostats",
+            "-i", $DistortedPath,
+            "-i", $ReferencePath,
+            "-filter_complex", "${filterChain}${vmafFilter}",
+            "-f", "null", "-"
+        )
+
+        Write-Verbose "Calculating VMAF: ffmpeg $ffmpegArgs"
+        $output = & ffmpeg $ffmpegArgs 2>&1
+
+        if ($output -join '`n' -match [regex]'(?m).*VMAF score: (?<vmaf>\d+\.+\d+).*') {
+            $results.VMAF = [double]$Matches.vmaf
+        } else {
+            Write-Warning "VMAF calculation failed: $($output -join "`n")"
+        }
+    }
+
+    # Расчет XPSNR
+    if ($Metrics -in ('Both', 'XPSNR')) {
+        $xpsnrFilter = "[dist][ref]xpsnr=eof_action=endall"
+        
+        $ffmpegArgs = @(
+            "-hide_banner", "-y", "-nostats",
+            "-i", $DistortedPath,
+            "-i", $ReferencePath,
+            "-filter_complex", "${filterChain}${xpsnrFilter}",
+            "-f", "null", "-"
+        )
+
+        Write-Verbose "Calculating XPSNR: ffmpeg $ffmpegArgs"
+        $output = & ffmpeg $ffmpegArgs 2>&1
+
+        if ($output -join '`n' -match [regex]'(?m)XPSNR.*y: (?<y>\d+\.\d+).*u: (?<u>\d+\.\d+).*v: (?<v>\d+\.\d+)') {
+            $results.XPSNR = @{
+                Y   = [double]$Matches['y']
+                U   = [double]$Matches['u']
+                V   = [double]$Matches['v']
+                AVG = ([double]$Matches['y'] + [double]$Matches['u'] + [double]$Matches['v']) / 3
+            }
+        } else {
+            Write-Warning "XPSNR calculation failed: $($output -join "`n")"
+        }
+    }
+
+    # Добавляем информацию о параметрах
+    $results['Parameters'] = @{
+        Crop         = $Crop
+        TimeRange    = if ($DurationSeconds -gt 0) {
+            "$TrimStartSeconds-$($TrimStartSeconds+$DurationSeconds)s"
+        } else { "Full duration" }
+        ModelVersion = $ModelVersion
+    }
+
+    return [PSCustomObject]$results
+}
+
+
+function Get-SafeFileName {
+    [CmdletBinding()]
+    param([string]$FileName)
+    
+    if ([string]::IsNullOrWhiteSpace($FileName)) { return [string]::Empty }
+    foreach ($char in [IO.Path]::GetInvalidFileNameChars()) {
+        $FileName = $FileName.Replace($char, '_')
+    }
+    return $FileName
+}
+
+
+
+Export-ModuleMember -Function Initialize-Configuration, Get-AudioTrackInfo, `
+                                Remove-TemporaryFiles, Get-VideoScriptInfo, `
+                                Get-VideoCropParameters, Write-Log, `
+                                Get-VideoQualityMetrics, Get-SafeFileName
