@@ -7,43 +7,45 @@
         MkvExtract = "mkvextract.exe"
         MkvPropedit= "mkvpropedit.exe"
         VSPipe     = "vspipe.exe"
-        #SvtAv1Enc  = "X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp\SvtAv1EncApp.exe"
-        SvtAv1Enc  = "d:\Sources\media-autobuild_suite\local64\bin-video\SvtAv1EncApp.exe"
-        OpusEnc    = "d:\Sources\media-autobuild_suite\local64\bin-audio\opusenc.exe"
-        AutoCrop   = "X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe"
+        #SvtAv1Enc  = "X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp\SvtAv1EncApp.exe'
+        SvtAv1Enc       = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp\SvtAv1EncApp.exe'
+        SvtAv1EncESS    = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-Essential\SvtAv1EncApp.exe'
+        SvtAv1EncHDR    = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-HDR\SvtAv1EncApp.exe'
+        SvtAv1EncPSYEX  = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-PSYEX\SvtAv1EncApp.exe'
+        OpusEnc         = 'd:\Sources\media-autobuild_suite\local64\bin-audio\opusenc.exe'
+        AutoCrop        = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe'
     }
 
     # Параметры обработки
     Processing = @{
-        DefaultThreads       = 20
-        #TempDir              = ".\temp"
-        DeleteTempFiles      = $false
-        DeleteTempAudioFiles = $false
-        AutoCropThreshold    = 1000
+        DefaultThreads = 4
+        keepTempAudioFiles = $true
+        DeleteTempFiles = $false
+        AutoCropThreshold = 1000
+        TempDir = "r:\Temp\"
     }
-
-    # Параметры кодирования
+    
     Encoding = @{
+        Encoder = Tools.SvtAv1EncESS
         Video = @{
-            CRF         = 31
-            Preset      = 3
-            CropRound   = 2
+            CRF = 25
+            Preset = 3
+            CropRound = 2
             XtraParams = @()
         }
         Audio = @{
-            Bitrates     = @{
-                Stereo   = 192
-                Surround = 340
-                Multi    = 384
+            CopyAudio = $false
+            Bitrates = @{
+                Stereo = "192k"
+                Surround = "340k"
+                Multi = "256k"
             }
         }
     }
 
-    # Шаблоны
     Templates = @{
         VapourSynth = @{
-            AutoCrop   = "d:\PSScripts\Convert-VideoToAV1\Templates\AutoCropTemplate.py"
-            Encoding   = "EncodingTemplate.vpy"
+            AutoCrop = 'd:\PSScripts\Convert-VideoToAV1\Templates\AutoCropTemplate.py'
         }
     }
 }

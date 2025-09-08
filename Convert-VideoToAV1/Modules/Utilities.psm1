@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Модуль вспомогательных функций
+    Вспомогательные функции для обработки видео
 #>
 
 $global:Config = $null
@@ -8,24 +8,14 @@ $global:VideoTools = $null
 
 function Initialize-Configuration {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$ConfigPath
-    )
-
+    param([Parameter(Mandatory)][string]$ConfigPath)
+    
     try {
         if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
             throw "Файл конфигурации не найден"
         }
-
         $global:Config = Import-PowerShellDataFile -Path $ConfigPath
         $global:VideoTools = $global:Config.Tools
-
-        # # Создаем временную директорию, если не существует
-        # if (-not (Test-Path -Path $global:Config.Processing.TempDir -PathType Container)) {
-        #     New-Item -Path $global:Config.Processing.TempDir -ItemType Directory -Force | Out-Null
-        # }
-
         Write-Log "Конфигурация успешно загружена" -Severity Success -Category 'Config'
     }
     catch {
@@ -36,14 +26,9 @@ function Initialize-Configuration {
 
 function Get-AudioTrackInfo {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$VideoFilePath
-    )
-
+    param([Parameter(Mandatory)][string]$VideoFilePath)
+    
     try {
-        Write-Log "Получение информации об аудиодорожках" -Severity Verbose -Category 'Audio'
-        
         $originalEncoding = [Console]::OutputEncoding
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         
@@ -77,22 +62,15 @@ function Get-AudioTrackInfo {
 
 function Remove-TemporaryFiles {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [hashtable]$Job
-    )
-
+    param([Parameter(Mandatory)][hashtable]$Job)
+    
     try {
         Write-Log "Очистка временных файлов ($($Job.TempFiles.Count) элементов)" -Severity Information -Category 'Cleanup'
         $removedCount = 0
         
         foreach ($file in $Job.TempFiles) {
             try {
-                if (Test-Path -LiteralPath $file -PathType Leaf) {
-                    Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
-                    $removedCount++
-                }
-                elseif (Test-Path -LiteralPath $file -PathType Container) {
+                if (Test-Path -LiteralPath $file) {
                     Remove-Item -LiteralPath $file -Force -Recurse -ErrorAction SilentlyContinue
                     $removedCount++
                 }
@@ -111,13 +89,9 @@ function Remove-TemporaryFiles {
 
 function Get-VideoScriptInfo {
     [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$ScriptPath
-    )
-
+    param ([Parameter(Mandatory)][string]$ScriptPath)
+    
     try {
-        Write-Log "Получение информации о VapourSynth скрипте" -Severity Verbose -Category 'Video'
         $vspInfo = (& vspipe --info $ScriptPath 2>&1)
         
         if ($LASTEXITCODE -ne 0) {
@@ -131,7 +105,6 @@ function Get-VideoScriptInfo {
             }
         }
 
-        Write-Log "Информация о скрипте получена" -Severity Debug -Category 'Video'
         return [PSCustomObject]$infoHash
     }
     catch {
@@ -142,11 +115,7 @@ function Get-VideoScriptInfo {
 
 function Get-VideoCropParameters {
     [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
-        [string]$InputFile
-    )
+    param ([Parameter(Mandatory)][string]$InputFile)
     
     function RoundToNearestMultiple {
         param([int]$Value, [int]$Multiple)
@@ -155,28 +124,19 @@ function Get-VideoCropParameters {
     }
 
     try {
-        Write-Log "Определение параметров обрезки для файла: $InputFile" -Severity Information -Category 'Video'
         $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
-        
-        # Получаем путь к шаблону из конфига
         $templatePath = $global:Config.Templates.VapourSynth.AutoCrop
         
         if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
             throw "Файл шаблона VapourSynth не найден: $templatePath"
         }
 
-        # Читаем шаблон и заменяем плейсхолдер
         $scriptContent = Get-Content -LiteralPath $templatePath -Raw
         $scriptContent = $scriptContent -replace '\{input_file\}', $InputFile
-
         Set-Content -LiteralPath $tmpScriptFile -Value $scriptContent -Force
 
         $AutoCropPath = $global:VideoTools.AutoCrop
-        $acFrameCount = 2
-        $acFrameInterval = 400
-        
-        Write-Log "Запуск AutoCrop для определения обрезки" -Severity Verbose -Category 'Video'
-        $autocropOutput = & $AutoCropPath $tmpScriptFile $acFrameCount $acFrameInterval 144 144 $global:Config.Processing.AutoCropThreshold 0
+        $autocropOutput = & $AutoCropPath $tmpScriptFile 2 400 144 144 $global:Config.Processing.AutoCropThreshold 0
         
         if ($LASTEXITCODE -ne 0) {
             throw "Ошибка выполнения AutoCrop (код $LASTEXITCODE)"
@@ -185,19 +145,12 @@ function Get-VideoCropParameters {
         $cropLine = $autocropOutput | Select-Object -Last 1
         $cropParams = $cropLine -split ',' | ForEach-Object { [int]$_ }
 
-        $result = [PSCustomObject]@{
-            Left           = RoundToNearestMultiple -Value $cropParams[0] -Multiple $global:Config.Encoding.Video.CropRound
-            Top            = RoundToNearestMultiple -Value $cropParams[1] -Multiple $global:Config.Encoding.Video.CropRound
-            Right          = RoundToNearestMultiple -Value $cropParams[2] -Multiple $global:Config.Encoding.Video.CropRound
-            Bottom         = RoundToNearestMultiple -Value $cropParams[3] -Multiple $global:Config.Encoding.Video.CropRound
-            OriginalLeft   = $cropParams[0]
-            OriginalTop    = $cropParams[1]
-            OriginalRight  = $cropParams[2]
-            OriginalBottom = $cropParams[3]
+        return [PSCustomObject]@{
+            Left   = RoundToNearestMultiple -Value $cropParams[0] -Multiple $global:Config.Encoding.Video.CropRound
+            Top    = RoundToNearestMultiple -Value $cropParams[1] -Multiple $global:Config.Encoding.Video.CropRound
+            Right  = RoundToNearestMultiple -Value $cropParams[2] -Multiple $global:Config.Encoding.Video.CropRound
+            Bottom = RoundToNearestMultiple -Value $cropParams[3] -Multiple $global:Config.Encoding.Video.CropRound
         }
-        
-        Write-Log "Параметры обрезки определены: $result" -Severity Information -Category 'Video'
-        return $result
     }
     catch {
         Write-Log "Ошибка при определении параметров обрезки: $_" -Severity Error -Category 'Video'
@@ -210,65 +163,87 @@ function Get-VideoCropParameters {
     }
 }
 
+function Get-VideoFrameRate {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$VideoPath)
+    
+    try {
+        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams v:0 `
+            -show_entries stream=r_frame_rate -of csv=p=0 $VideoPath
+        return [double]($ffprobeOutput -replace '/1','')
+    }
+    catch {
+        Write-Log "Ошибка получения framerate: $_" -Severity Error -Category 'Video'
+        throw
+    }
+}
+
+function ConvertTo-Seconds {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$TimeString,
+        [double]$FrameRate
+    )
+    
+    try {
+        if ($TimeString -match '^(\d+):(\d+):(\d+)(?:\.(\d+))?$') {
+            $hours = [int]$Matches[1]
+            $minutes = [int]$Matches[2]
+            $seconds = [int]$Matches[3]
+            $milliseconds = if ($Matches[4]) { [int]$Matches[4] } else { 0 }
+            return $hours * 3600 + $minutes * 60 + $seconds + ($milliseconds / 1000)
+        }
+        elseif ($TimeString -match '^(\d+)(?:\.(\d+))?s$') {
+            $seconds = [int]$Matches[1]
+            $milliseconds = if ($Matches[2]) { [int]$Matches[2] } else { 0 }
+            return $seconds + ($milliseconds / 1000)
+        }
+        
+        throw "Неверный формат времени: $TimeString"
+    }
+    catch {
+        Write-Log "Ошибка конвертации времени: $_" -Severity Error -Category 'Video'
+        throw
+    }
+}
+
 function Write-Log {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
-        [string]$Message,
-            
+        [Parameter(Mandatory)][string]$Message,
         [ValidateSet('Debug', 'Information', 'Warning', 'Error', 'Success', 'Verbose')]
         [string]$Severity = 'Information',
-
         [string]$Category,
-            
         [switch]$NoNewLine
     )
 
     $timestamp = [DateTime]::Now.ToString("yyyy-MM-dd HH:mm:ss.fff")
-
-    switch ($Severity) {
-        'Success'     { $color = 'Green';       $logSeverity = 'OK!' }
-        'Debug'       { $color = 'DarkGray';    $logSeverity = 'DBG' }
-        'Information' { $color = 'Cyan';        $logSeverity = 'INF' }
-        'Verbose'     { $color = 'DarkMagenta'; $logSeverity = 'VRB' }
-        'Warning'     { $color = 'Yellow';      $logSeverity = 'WRN' }
-        'Error'       { $color = 'Red';         $logSeverity = 'ERR' }
-        default       { $color = 'White';       $logSeverity = '---' }
+    $logSeverity = switch ($Severity) {
+        'Success'     { 'OK!' }
+        'Debug'       { 'DBG' }
+        'Information' { 'INF' }
+        'Verbose'     { 'VRB' }
+        'Warning'     { 'WRN' }
+        'Error'       { 'ERR' }
+        default       { '---' }
+    }
+    
+    $color = switch ($Severity) {
+        'Success'     { 'Green' }
+        'Debug'       { 'DarkGray' }
+        'Information' { 'Cyan' }
+        'Verbose'     { 'DarkMagenta' }
+        'Warning'     { 'Yellow' }
+        'Error'       { 'Red' }
+        default       { 'White' }
     }
     
     $logMessage = "[$timestamp] [$logSeverity]$(if($Category){ " [$Category]" })`t$Message"
-
-    $params = @{
-        ForegroundColor = $color
-    }
-    
-    if ($NoNewLine) {
-        $params['NoNewline'] = $true
-    }
-
-    Write-Host $logMessage @params
+    Write-Host $logMessage -ForegroundColor $color -NoNewline:$NoNewLine
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-<#
-.SYNOPSIS
+function Get-VideoQualityMetrics {
+<#.SYNOPSIS
     Вычисляет метрики качества видео VMAF и XPSNR между искаженным и эталонным видео.
 .DESCRIPTION
     Объединяет функциональность VMAF и XPSNR в единый вызов с поддержкой:
@@ -301,7 +276,6 @@ function Write-Log {
 .EXAMPLE
     Get-VideoQualityMetrics -ReferencePath "original.mkv" -DistortedPath "encoded.mp4" -Metrics Both
 #>
-function Get-VideoQualityMetrics {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
@@ -452,7 +426,6 @@ function Get-VideoQualityMetrics {
     return [PSCustomObject]$results
 }
 
-
 function Get-SafeFileName {
     [CmdletBinding()]
     param([string]$FileName)
@@ -464,9 +437,6 @@ function Get-SafeFileName {
     return $FileName
 }
 
-
-
 Export-ModuleMember -Function Initialize-Configuration, Get-AudioTrackInfo, `
-                                Remove-TemporaryFiles, Get-VideoScriptInfo, `
-                                Get-VideoCropParameters, Write-Log, `
-                                Get-VideoQualityMetrics, Get-SafeFileName
+    Remove-TemporaryFiles, Get-VideoScriptInfo, Get-VideoCropParameters, `
+    Write-Log, Get-VideoQualityMetrics, Get-VideoFrameRate, ConvertTo-Seconds, Get-SafeFileName
