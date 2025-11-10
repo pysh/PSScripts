@@ -329,7 +329,6 @@ function Invoke-ProcessSubtitles {
         }
     }
 }
-
 function ConvertFrom-NfoToXml {
     [CmdletBinding()]
     param(
@@ -386,6 +385,22 @@ function ConvertFrom-NfoToXml {
                 $writer.WriteElementString("String", $director.InnerText)
                 $writer.WriteEndElement()
                 $writer.WriteEndElement()
+            }
+
+            # Добавляем UNIQUEID теги
+            foreach ($uniqueid in $episode.uniqueid) {
+                $type = $uniqueid.type
+                $value = $uniqueid.InnerText
+
+                if ($type -and $value) {
+                    $tagName = $type.ToUpper()
+                    $writer.WriteStartElement("Tag")
+                    $writer.WriteStartElement("Simple")
+                    $writer.WriteElementString("Name", $tagName)
+                    $writer.WriteElementString("String", $value)
+                    $writer.WriteEndElement()
+                    $writer.WriteEndElement()
+                }
             }
 
             $writer.WriteEndElement()

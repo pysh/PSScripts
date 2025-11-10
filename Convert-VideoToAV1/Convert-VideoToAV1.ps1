@@ -12,14 +12,16 @@ using namespace System.IO
 param (
     [Parameter(Mandatory = $false)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Container })]
-    [string]$InputDirectory = 'g:\Видео\Сериалы\Зарубежные\Чёрное зеркало (Black Mirror)\season 07\Black.Mirror.S07.2160p.NF.WEB-DL.SDR.H.265\',
+    [string]$InputDirectory = 'y:\Видео\Сериалы\Зарубежные\Пацаны (The Boys)\The.Boys.2022.S03.2160p.AMZN.WEB-DL.DDP.5.1.HDR.10.Plus.DoVi.P8\',
     
     [Parameter(Mandatory = $false)]
-    [ValidateScript({ Test-Path -LiteralPath $_ -PathType Container })]
-    [string]$OutputDirectory = 'g:\Видео\Сериалы\Зарубежные\Чёрное зеркало (Black Mirror)\season 07\Black.Mirror.S07.2160p.NF.WEB-DL.SDR.H.265\out\',
+    [string]$OutputDirectory = (Join-Path -Path $InputDirectory -ChildPath '.av1_out'),
+
+    [Parameter(Mandatory = $false)]
+    [string]$InputFilesFilter = '.*',
     
     [Parameter(Mandatory = $false)]
-    [Switch]$CopyFiletoTempDir = $false,
+    [Switch]$CopyFiletoTempDir = $true,
     
     [Parameter(Mandatory = $false)]
     [int]$TrimStartFrame = 0,
@@ -34,7 +36,12 @@ param (
     [double]$TrimEndSeconds = 0,
     
     [Parameter(Mandatory = $false)]
-    [string]$TrimTimecode = ""
+    [string]$TrimTimecode = "",
+    
+    # Параметр для выбора энкодера (значение по умолчанию установим позже)
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('SvtAv1Enc', 'SvtAv1EncESS', 'SvtAv1EncHDR', 'SvtAv1EncPSYEX', 'Rav1eEnc', 'AomAv1Enc')]
+    [string]$Encoder
 )
 
 begin {
@@ -46,6 +53,11 @@ begin {
     
     Initialize-Configuration -ConfigPath (Join-Path -Path $PSScriptRoot -ChildPath "config.psd1")
     
+    # Устанавливаем значение по умолчанию для Encoder после загрузки конфига
+    if (-not $PSBoundParameters.ContainsKey('Encoder')) {
+        $Encoder = $global:Config.Encoding.DefaultEncoder
+    }
+    
     # Проверка инструментов
     foreach ($tool in $global:VideoTools.GetEnumerator()) {
         if (-not (Get-Command -Name $tool.Value -ErrorAction SilentlyContinue)) {
@@ -53,15 +65,23 @@ begin {
         }
         Write-Log "$($tool.Name):`t$($tool.Value)" Information -Category "Tools"
     }
+    
+    if(-not (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
+        New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
+    }
+
+    Write-Log "Выбран энкодер: $Encoder" -Severity Information -Category "Main"
 }
 
 process {
     try {
         # Поиск видеофайлов
-        $videoFiles = Get-ChildItem -LiteralPath $InputDirectory -File -Filter '*.mkv' | 
-            Where-Object { $_.Name -notmatch '_out\.mkv$' } | 
-            Sort-Object LastWriteTime
-        
+        $videoFiles = Get-ChildItem -LiteralPath $InputDirectory -File |
+            Where-Object {
+                $_.Extension -match 'mkv|mp4' -and
+                $_.Name -notmatch '_out\.mkv$' -and
+                $_.BaseName -match $InputFilesFilter
+            }
         if (-not $videoFiles) {
             Write-Error "В директории $InputDirectory не найдены MKV файлы"
             return
@@ -106,6 +126,17 @@ process {
                     StartTime   = [DateTime]::Now
                 }
                 
+                # Устанавливаем выбранный энкодер
+                $job.Encoder = $Encoder
+                $job.EncoderPath = Get-EncoderPath -EncoderName $Encoder
+                $encoderConfig = Get-EncoderConfig -EncoderName $Encoder
+                $job.EncoderParams = Get-EncoderParams -EncoderName $Encoder -EncoderConfig $encoderConfig
+
+                
+                
+                Write-Log "Параметры энкодера: $($encoderConfig | ConvertTo-Json -Compress)" -Severity Verbose -Category 'Video'
+                Write-Log "Путь к энкодеру: $($job.EncoderPath)" -Severity Verbose -Category 'Video'
+                
                 # 1. ОБРАБОТКА МЕТАДАННЫХ (первым делом)
                 Write-Log "Этап 1/3: Обработка метаданных" -Severity Information -Category 'Main'
                 $job = Invoke-ProcessMetaData -Job $job
@@ -131,15 +162,6 @@ process {
                             default { "${_}p" }
                         }
 
-                        # Определяем разрешение по высоте
-                        # $resolution = switch ($height) {
-                        #     { $_ -gt 2160 } { "8k"; break }
-                        #     { $_ -gt 1440 } { "4k"; break }
-                        #     { $_ -gt 1080 } { "2k"; break }
-                        #     { $_ -gt 720 }  { "1080p"; break }
-                        #     default { "${_}p" }
-                        # }
-                        
                         # Форматируем дату
                         $airDate = if ($job.NFOFields.AIR_DATE) { $job.NFOFields.AIR_DATE } else { $job.NFOFields.DATE_RELEASED }
                         if ($airDate -and $airDate -match "^\d{4}-\d{2}-\d{2}") {
@@ -207,10 +229,7 @@ process {
 
                 # 3. ОБРАБОТКА ВИДЕО (третий, самый долгий этап)
                 Write-Log "Этап 3/3: Обработка видео" -Severity Information -Category 'Main'
-                $job = ConvertTo-Av1Video -Job $job
-                
-                # Сохранение настроек
-                ($job | ConvertTo-Json -Depth 10) | Out-File -LiteralPath "$($job.FinalOutput).json" -Encoding UTF8
+                $job = ConvertTo-Av1Video -Job $job -Debug
                 
                 # ФИНАЛИЗАЦИЯ
                 Write-Log "Создание итогового файла" -Severity Information -Category 'Main'
@@ -218,6 +237,35 @@ process {
                 
                 $duration = [DateTime]::Now - $job.StartTime
                 Write-Log "Файл успешно обработан: $($job.FinalOutput) (Время: $($duration.ToString('hh\:mm\:ss')))" -Severity Success -Category 'Main'
+
+                <#
+                # Расчет VMAF
+                Write-Log "Расчёт VMAF..." -Severity Information -Category 'VMAF'
+                $gqmParams = @{
+                    DistortedPath = $job.FinalOutput
+                    ReferencePath = $job.ScriptFile
+                    TrimStartSeconds = $job.TrimStartSeconds
+                    DurationSeconds = $job.TrimDurationSeconds
+                    Metrics = 'VMAF'
+                    Subsample = 5
+                }
+                try {
+                    # $quality = Get-VideoQualityMetrics @gqmParams
+                    $job.Quality = $quality.VMAF
+                    Write-Log "VMAF: $($quality.VMAF)" -Severity Information -Category 'VMAF'
+                }
+                catch {
+                    $job.Quality = 0
+                    Write-Log "Ошибка при расчёте VMAF: $_" -Severity Error -Category 'VMAF'
+                }
+                #>
+
+                $NewFileName = [IO.Path]::ChangeExtension($job.FinalOutput, ("_[{0:0.00}].mkv" -f $quality.VMAF))
+                # Сохранение настроек
+                ($job | ConvertTo-Json -Depth 10) | Out-File -LiteralPath "${NewFileName}.json" -Encoding UTF8
+
+                Rename-Item -LiteralPath $job.FinalOutput -NewName $NewFileName
+                $job.FinalOutput = $NewFileName
             }
             catch {
                 Write-Log "Ошибка при обработке $($videoFile.Name): $_" -Severity Error -Category 'Main'
