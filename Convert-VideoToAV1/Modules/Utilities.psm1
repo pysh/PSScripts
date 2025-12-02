@@ -75,6 +75,41 @@ function Get-AudioTrackInfo {
     }
 }
 
+function Get-MP4AudioTrackInfo {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$VideoFilePath)
+    
+    try {
+        $originalEncoding = [Console]::OutputEncoding
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        
+        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams a `
+            -show_entries stream=index,codec_name,channels:stream_tags=language,title,handler_name:disposition=default,forced `
+            -of json $VideoFilePath | ConvertFrom-Json
+        
+        [Console]::OutputEncoding = $originalEncoding
+        
+        $result = $ffprobeOutput.streams | ForEach-Object {
+            [PSCustomObject]@{
+                Index     = $_.index
+                CodecName = $_.codec_name
+                Channels  = $_.channels
+                Language  = $_.tags.language
+                Title     = ([string]::IsNullOrWhiteSpace($_.tags.title) ? $_.tags.handler_name : $_.tags.title)
+                Default   = $_.disposition.default -eq 1
+                Forced    = $_.disposition.forced -eq 1
+            }
+        }
+        
+        Write-Log "Найдено $($result.Count) аудиодорожек в MP4" -Severity Information -Category 'Audio'
+        return $result
+    }
+    catch {
+        Write-Log "Ошибка при получении информации об аудиодорожках MP4: $_" -Severity Error -Category 'Audio'
+        throw
+    }
+}
+
 function Remove-TemporaryFiles {
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable]$Job)
@@ -610,10 +645,48 @@ function Get-EncoderConfig {
     }
 }
 
-
-
-
-
+function Test-VideoHDR {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$VideoPath)
+    
+    try {
+        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams v:0 `
+            -show_entries stream=color_primaries,color_transfer,color_space,side_data_list `
+            -of json $VideoPath | ConvertFrom-Json
+        
+        $stream = $ffprobeOutput.streams[0]
+        
+        # Проверяем цветовые характеристики HDR
+        $isHDR = $false
+        
+        # Проверяем transfer characteristics
+        if ($stream.color_transfer -in ('smpte2084', 'arib-std-b67')) {
+            $isHDR = $true
+        }
+        
+        # Проверяем color primaries
+        if ($stream.color_primaries -eq 'bt2020') {
+            $isHDR = $true
+        }
+        
+        # Проверяем Dolby Vision side data
+        if ($stream.side_data_list) {
+            foreach ($sideData in $stream.side_data_list) {
+                if ($sideData.side_data_type -eq 'DOVI configuration record') {
+                    $isHDR = $true
+                    Write-Log "Обнаружен Dolby Vision" -Severity Information -Category 'Video'
+                    break
+                }
+            }
+        }
+        
+        return $isHDR
+    }
+    catch {
+        Write-Log "Ошибка при определении HDR/DV: $_" -Severity Warning -Category 'Video'
+        return $false
+    }
+}
 
 # Хеш-таблицы для преобразования цветовых параметров
 $script:ColorRangeMappings = @{
@@ -840,23 +913,6 @@ function Get-VideoColorMappings {
 
     return $mappings
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 function Copy-VideoFragments {
     <#
@@ -1290,9 +1346,185 @@ clip.set_output()
     }
 }
 
+class VideoColorInfo {
+    [bool]$IsHDR
+    [bool]$IsDolbyVision
+    [string]$ColorPrimaries
+    [string]$ColorTransfer
+    [string]$ColorSpace
+    [string]$ColorRange
+    [string]$HDRFormat
+    [double]$MaxLuminance
+    [double]$MinLuminance
+    [string]$MatrixCoefficients
+    
+    VideoColorInfo() {
+        $this.IsHDR = $false
+        $this.IsDolbyVision = $false
+        $this.HDRFormat = "SDR"
+    }
+    
+    [string] ToString() {
+        if ($this.IsHDR) {
+            $format = if ($this.IsDolbyVision) { "Dolby Vision" } else { $this.HDRFormat }
+            return "HDR ($format) - Primaries: $($this.ColorPrimaries), Transfer: $($this.ColorTransfer)"
+        }
+        return "SDR - Primaries: $($this.ColorPrimaries), Transfer: $($this.ColorTransfer)"
+    }
+}
+
+function Get-DetailedVideoColorInfo {
+    <#
+    .SYNOPSIS
+        Получает детальную информацию о цветовых характеристиках видео
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$VideoPath
+    )
+    
+    try {
+        $colorInfo = [VideoColorInfo]::new()
+        
+        # Получаем базовую информацию через ffprobe
+        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams v:0 `
+            -show_entries stream=color_primaries,color_transfer,color_space,color_range,side_data_list `
+            -show_entries format_tags=MAXCLL,MAXFALL `
+            -of json $VideoPath | ConvertFrom-Json
+        
+        $stream = $ffprobeOutput.streams[0]
+        $formatTags = $ffprobeOutput.format.tags
+        
+        # Заполняем базовые цветовые характеристики
+        $colorInfo.ColorPrimaries = $stream.color_primaries ?? 'unknown'
+        $colorInfo.ColorTransfer = $stream.color_transfer ?? 'unknown'
+        $colorInfo.ColorSpace = $stream.color_space ?? 'unknown'
+        $colorInfo.ColorRange = $stream.color_range ?? 'unknown'
+        
+        # Определяем HDR характеристики
+        $colorInfo.IsHDR = $false
+        
+        # Проверяем transfer characteristics для HDR
+        if ($stream.color_transfer -in ('smpte2084', 'arib-std-b67', 'bt2020-10', 'bt2020-12')) {
+            $colorInfo.IsHDR = $true
+            $colorInfo.HDRFormat = switch ($stream.color_transfer) {
+                'smpte2084' { 'HDR10' }
+                'arib-std-b67' { 'HLG' }
+                'bt2020-10' { 'HDR10' }
+                'bt2020-12' { 'HDR10' }
+                default { 'HDR' }
+            }
+        }
+        
+        # Проверяем Dolby Vision
+        if ($stream.side_data_list) {
+            foreach ($sideData in $stream.side_data_list) {
+                if ($sideData.side_data_type -eq 'DOVI configuration record') {
+                    $colorInfo.IsHDR = $true
+                    $colorInfo.IsDolbyVision = $true
+                    $colorInfo.HDRFormat = 'Dolby Vision'
+                    break
+                }
+            }
+        }
+        
+        # Получаем информацию о яркости из метаданных
+        if ($formatTags) {
+            if ($formatTags.MAXCLL) {
+                $colorInfo.MaxLuminance = [double]$formatTags.MAXCLL
+            }
+            if ($formatTags.MAXFALL) {
+                $colorInfo.MinLuminance = [double]$formatTags.MAXFALL
+            }
+        }
+        
+        # Определяем матричные коэффициенты
+        if ($stream.color_space -and $script:MatrixMappings[$stream.color_space]) {
+            $colorInfo.MatrixCoefficients = $stream.color_space
+        }
+        
+        Write-Log "Цветовая информация: $colorInfo" -Severity Information -Category 'Video'
+        return $colorInfo
+    }
+    catch {
+        Write-Log "Ошибка при получении цветовой информации: $_" -Severity Warning -Category 'Video'
+        # Возвращаем базовый объект с информацией об ошибке
+        $colorInfo.IsHDR = Test-VideoHDR -VideoPath $VideoPath
+        return $colorInfo
+    }
+}
+
+function Get-RecommendedEncoderSettings {
+    <#
+    .SYNOPSIS
+        Рекомендует настройки энкодера на основе характеристик видео
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [VideoColorInfo]$ColorInfo,
+        
+        [Parameter(Mandatory)]
+        [string]$EncoderName,
+        
+        [object]$VideoStats
+    )
+    
+    $recommendations = @{
+        Encoder = $EncoderName
+        QualityAdjustment = 0
+        PresetAdjustment = 0
+        AdditionalParams = @()
+        Notes = @()
+    }
+    
+    # Рекомендации для HDR контента
+    if ($ColorInfo.IsHDR) {
+        $recommendations.Notes += "HDR контент: $($ColorInfo.HDRFormat)"
+        
+        switch ($EncoderName) {
+            { $_ -like 'SvtAv1Enc*' } {
+                if ($ColorInfo.IsDolbyVision) {
+                    $recommendations.AdditionalParams += '--enable-dolby-vision', '1'
+                    $recommendations.Notes += "Включена поддержка Dolby Vision"
+                }
+                
+                # Для HDR немного увеличиваем качество
+                $recommendations.QualityAdjustment = -2
+                $recommendations.Notes += "HDR требует более высокого битрейта"
+            }
+            
+            'AomAv1Enc' {
+                $recommendations.AdditionalParams += '--color-primaries=bt2020', '--transfer-characteristics=smpte2084'
+                if ($ColorInfo.MaxLuminance -gt 0) {
+                    $recommendations.AdditionalParams += "--mastering-display=$($ColorInfo.MaxLuminance)nits"
+                }
+            }
+        }
+    }
+    
+    # Рекомендации на основе разрешения
+    if ($VideoStats -and $VideoStats.ResolutionWidth -gt 1920) {
+        $recommendations.Notes += "Высокое разрешение: $($VideoStats.ResolutionWidth)x$($VideoStats.ResolutionHeight)"
+        
+        # Для 4K+ уменьшаем preset для лучшего качества
+        if ($VideoStats.ResolutionWidth -gt 3840) {
+            $recommendations.PresetAdjustment = -2
+            $recommendations.Notes += "8K контент: используем более медленный preset"
+        } elseif ($VideoStats.ResolutionWidth -gt 2560) {
+            $recommendations.PresetAdjustment = -1
+            $recommendations.Notes += "4K контент: умеренное снижение скорости"
+        }
+    }
+    
+    return $recommendations
+}
+
 # 
 Export-ModuleMember -Function Initialize-Configuration, Get-AudioTrackInfo, `
     Remove-TemporaryFiles, Get-VideoScriptInfo, Get-VideoCropParameters, `
     Write-Log, Get-VideoQualityMetrics, Get-VideoFrameRate, ConvertTo-Seconds, `
     Get-SafeFileName, Get-EncoderPath, Get-EncoderParams, Get-EncoderConfig, `
-    Copy-VideoFragments, Get-VideoStats, Get-VideoAutoCropParams, Get-VideoColorMappings, Convert-FpsToDouble
+    Copy-VideoFragments, Get-VideoStats, Get-VideoAutoCropParams, Get-VideoColorMappings, `
+    Convert-FpsToDouble, Get-MP4AudioTrackInfo, Test-VideoHDR

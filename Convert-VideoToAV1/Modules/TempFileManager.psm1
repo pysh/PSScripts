@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Modern temp file manager for PowerShell 7+
+    Temp file manager for PowerShell 7+
 #>
 
 using namespace System.IO

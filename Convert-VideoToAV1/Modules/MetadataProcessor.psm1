@@ -77,9 +77,107 @@ function Invoke-ProcessMetaData {
     }
 }
 
+function Invoke-ProcessMP4Metadata {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Job)
+
+    try {
+        Write-Log "Обработка метаданных MP4 файла" -Severity Information -Category 'Metadata'
+        
+        $metadataDir = Join-Path -Path $Job.WorkingDir -ChildPath "meta"
+        New-Item -ItemType Directory -Path $metadataDir -Force | Out-Null
+        $Job.Metadata = @{ 
+            TempDir = $metadataDir
+            Attachments = [System.Collections.Generic.List[object]]::new()
+        }
+
+        # Поиск обложки
+        $coverFiles = @('cover.jpg', 'cover.png', 'cover.webp', 'folder.jpg', 'folder.png', 'folder.webp')
+        $coverFile = $null
+        
+        foreach ($coverName in $coverFiles) {
+            $potentialCover = Join-Path -Path ([IO.Path]::GetDirectoryName($Job.VideoPath)) -ChildPath $coverName
+            if (Test-Path -LiteralPath $potentialCover -PathType Leaf) {
+                $coverFile = $potentialCover
+                Write-Log "Найдена обложка: $coverFile" -Severity Information -Category 'Metadata'
+                break
+            }
+        }
+        
+        # Копируем обложку
+        if ($coverFile) {
+            $coverExt = [IO.Path]::GetExtension($coverFile)
+            $coverDest = Join-Path -Path $metadataDir -ChildPath "cover$coverExt"
+            Copy-Item -LiteralPath $coverFile -Destination $coverDest -Force
+            $Job.Metadata.CoverFile = $coverDest
+            $Job.TempFiles.Add($coverDest)
+        }
+
+        # Извлечение информации через FFprobe для MP4
+        $originalEncoding = [Console]::OutputEncoding
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -print_format json -show_format -show_streams $Job.VideoPath
+        $jsonInfo = $ffprobeOutput | ConvertFrom-Json
+        [Console]::OutputEncoding = $originalEncoding
+
+        # Обработка аудио и субтитров для MP4
+        Invoke-ProcessMP4Streams -jsonInfo $jsonInfo -Job $Job -metadataDir $metadataDir
+
+        # Извлечение глав (если есть)
+        $chaptersFile = Join-Path -Path $metadataDir -ChildPath "$($Job.BaseName)_chapters.xml"
+        $tempChaptersFile = Join-Path -Path $metadataDir -ChildPath "$($Job.BaseName)_chapters_ffmetadata.txt"
+        
+        try {
+            # Извлекаем главы в формате FFmetadata
+            & $global:VideoTools.FFmpeg -i $Job.VideoPath -f ffmetadata $tempChaptersFile 2>&1 | Out-Null
+            
+            if (Test-Path -LiteralPath $tempChaptersFile -PathType Leaf) {
+                # Конвертируем в XML формат для mkvmerge
+                Convert-MP4ChaptersToXML -InputFile $tempChaptersFile -OutputFile $chaptersFile
+                
+                if (Test-Path -LiteralPath $chaptersFile -PathType Leaf) {
+                    Write-Log "Главы MP4 успешно извлечены и сконвертированы" -Severity Information -Category 'Metadata'
+                    $Job.TempFiles.Add($tempChaptersFile)
+                } else {
+                    Write-Log "Не удалось создать файл глав XML" -Severity Warning -Category 'Metadata'
+                }
+            } else {
+                Write-Log "Главы не найдены в MP4 файле" -Severity Verbose -Category 'Metadata'
+            }
+        } 
+        catch {
+            Write-Log "Ошибка при извлечении глав MP4: $_" -Severity Warning -Category 'Metadata'
+        }
+
+        # Обработка NFO файла
+        $nfoFile = [IO.Path]::ChangeExtension($Job.VideoPath, "nfo")
+        if (Test-Path -LiteralPath $nfoFile -PathType Leaf) {
+            $nfoTagsFile = Join-Path -Path $Job.WorkingDir -ChildPath "$($Job.BaseName)_nfo_tags.xml"
+            $fields = ConvertFrom-NfoToXml -NfoFile $nfoFile -OutputFile $nfoTagsFile
+            $Job.NFOFields = $fields
+            $Job.NfoTags = $nfoTagsFile
+            $Job.TempFiles.Add($nfoTagsFile)
+        }
+
+        $Job.TempFiles.Add($metadataDir)
+        Write-Log "Обработка метаданных MP4 завершена" -Severity Success -Category 'Metadata'
+        return $Job
+    }
+    catch {
+        Write-Log "Ошибка при обработке метаданных MP4: $_" -Severity Error -Category 'Metadata'
+        throw
+    }
+}
+
 function Complete-MediaFile {
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable]$Job)
+
+    $airDateFormatted = if ($job.NFOFields.AIR_DATE) { 
+        $job.NFOFields.AIR_DATE 
+    } else { 
+        $job.NFOFields.DATE_RELEASED ?? "Unknown" 
+    }
 
     try {
         Write-Log "Начало создания итогового файла" -Severity Information -Category 'Muxing'
@@ -329,6 +427,202 @@ function Invoke-ProcessSubtitles {
         }
     }
 }
+
+function Invoke-ProcessMP4Streams {
+    param ([object]$jsonInfo, [hashtable]$Job, [string]$metadataDir)
+
+    # Обработка субтитров MP4
+    $subtitleStreams = $jsonInfo.streams | Where-Object { $_.codec_type -eq 'subtitle' } | Sort-Object { [int]$_.index }
+    Write-Log "Найдено $($subtitleStreams.Count) дорожек субтитров в MP4" -Severity Information -Category 'Subtitles'
+
+    $subtitleIndex = 0
+    foreach ($stream in $subtitleStreams) {
+        try {
+            $lang = if ($stream.tags.language -eq 'und') { '' } else { $stream.tags.language }
+            $title = [string]::IsNullOrWhiteSpace($stream.tags.title) ? $stream.tags.handler_name : $stream.tags.title
+            $ext = switch ($stream.codec_name) {
+                'mov_text' { 'srt' }
+                'eia_608' { 'srt' }
+                'webvtt' { 'vtt' }
+                default { 'srt' }
+            }
+
+            $subFile = Join-Path -Path $metadataDir -ChildPath (
+                "sID{0}_[{1}]_{{`{2`}}}{3}{4}.{5}" -f 
+                $stream.index,
+                $lang,
+                $title,
+                ($stream.disposition.default -eq 1 ? '+' : '-'),
+                ($stream.disposition.forced -eq 1 ? 'F' : ''),
+                $ext
+            )
+
+            # Параметры обрезки
+            $trimParams = @()
+            if ($Job.TrimStartSeconds -gt 0) {
+                $trimParams += '-ss', $Job.TrimStartSeconds.ToString('0.######', [System.Globalization.CultureInfo]::InvariantCulture)
+            }
+            if ($Job.TrimDurationSeconds -gt 0) {
+                $trimParams += '-t', $Job.TrimDurationSeconds.ToString('0.######', [System.Globalization.CultureInfo]::InvariantCulture)
+            }
+
+            # Извлечение субтитров
+            $ffmpegArgs = @(
+                "-y"
+                "-hide_banner"
+                "-loglevel", "error"
+                "-i", $Job.VideoPath
+                $trimParams
+                "-map", "0:s:$subtitleIndex"
+                #"-c", "copy"
+                $subFile
+            )
+            
+            Write-Log "Извлечение субтитров MP4 (индекс: $subtitleIndex)" -Severity Debug -Category 'Subtitles'
+            & $global:VideoTools.FFmpeg $ffmpegArgs
+
+            if (Test-Path -LiteralPath $subFile -PathType Leaf) {
+                $Job.Metadata["Subtitle_$($stream.index)"] = @{
+                    Path     = $subFile
+                    Language = $lang
+                    Name     = $title
+                    Codec    = $stream.codec_name
+                    Default  = ($stream.disposition.default -eq 1)
+                    Forced   = ($stream.disposition.forced -eq 1)
+                }
+                Write-Log "Субтитры MP4 успешно извлечены: $([IO.Path]::GetFileName($subFile))" -Severity Information -Category 'Subtitles'
+            }
+            
+            $subtitleIndex++
+        }
+        catch {
+            Write-Log "Ошибка при извлечении субтитров MP4 (индекс: $($stream.index)): $_" -Severity Warning -Category 'Subtitles'
+            $subtitleIndex++
+        }
+    }
+}
+
+function Convert-MP4ChaptersToXML {
+    param([string]$InputFile, [string]$OutputFile)
+
+    try {
+        if (-not (Test-Path -LiteralPath $InputFile)) { 
+            Write-Log "Файл глав MP4 не найден: $InputFile" -Severity Verbose -Category 'Metadata'
+            return 
+        }
+        
+        $content = Get-Content -LiteralPath $InputFile -Raw
+        $chapters = [System.Collections.Generic.List[hashtable]]::new()
+        
+        # Парсим главы из формата FFmetadata
+        $lines = $content -split "`n"
+        $currentChapter = @{}
+        $timeBase = "1/1000"  # значение по умолчанию
+        
+        foreach ($line in $lines) {
+            $line = $line.Trim()
+            if ($line -eq '') { continue }
+            
+            if ($line -match '^\[CHAPTER\]$') {
+                if ($currentChapter.Count -gt 0) {
+                    $chapters.Add($currentChapter.Clone())
+                }
+                $currentChapter = @{TimeBase = $timeBase}
+            }
+            elseif ($line -match '^TIMEBASE=(\d+)/(\d+)$') {
+                $timeBase = "$($Matches[1])/$($Matches[2])"
+                if ($currentChapter.Count -gt 0) {
+                    $currentChapter.TimeBase = $timeBase
+                }
+            }
+            elseif ($line -match '^START=(\d+)$') {
+                $currentChapter.Start = [int64]$Matches[1]
+            }
+            elseif ($line -match '^END=(\d+)$') {
+                $currentChapter.End = [int64]$Matches[1]
+            }
+            elseif ($line -match '^title=(.+)$') {
+                $currentChapter.Title = $Matches[1].Trim()
+            }
+        }
+        
+        if ($currentChapter.Count -gt 0) {
+            $chapters.Add($currentChapter)
+        }
+
+        if ($chapters.Count -eq 0) {
+            Write-Log "Главы не найдены в файле MP4" -Severity Warning -Category 'Metadata'
+            return
+        }
+
+        # Создаем XML для mkvmerge
+        $settings = [System.Xml.XmlWriterSettings]@{
+            Indent = $true
+            Encoding = [System.Text.Encoding]::UTF8
+        }
+        
+        $xmlWriter = [System.Xml.XmlWriter]::Create($OutputFile, $settings)
+        try {
+            $xmlWriter.WriteStartDocument()
+            $xmlWriter.WriteDocType("Chapters", "", "matroskachapters.dtd", "")
+            $xmlWriter.WriteStartElement("Chapters")
+            $xmlWriter.WriteStartElement("EditionEntry")
+            
+            foreach ($chapter in $chapters) {
+                if ($chapter.ContainsKey('Start') -and $chapter.ContainsKey('Title') -and $chapter.ContainsKey('TimeBase')) {
+                    # Парсим timebase
+                    $timeBaseParts = $chapter.TimeBase -split '/'
+                    $numerator = [double]$timeBaseParts[0]
+                    $denominator = [double]$timeBaseParts[1]
+                    
+                    if ($numerator -eq 0) { $numerator = 1 }
+                    if ($denominator -eq 0) { $denominator = 1000 }
+                    
+                    # Конвертируем время из тиков в секунды
+                    $startTimeSeconds = $chapter.Start * ($numerator / $denominator)
+                    
+                    # Форматируем время в формат HH:MM:SS.mmm
+                    $timeSpan = [TimeSpan]::FromSeconds($startTimeSeconds)
+                    $chapterTime = "{0:00}:{1:00}:{2:00}.{3:000}" -f `
+                        [Math]::Floor($timeSpan.TotalHours), 
+                        $timeSpan.Minutes, 
+                        $timeSpan.Seconds,
+                        $timeSpan.Milliseconds
+                    
+                    $xmlWriter.WriteStartElement("ChapterAtom")
+                    
+                    # ChapterTimeStart
+                    $xmlWriter.WriteStartElement("ChapterTimeStart")
+                    $xmlWriter.WriteString($chapterTime)
+                    $xmlWriter.WriteEndElement() # ChapterTimeStart
+                    
+                    # ChapterDisplay
+                    $xmlWriter.WriteStartElement("ChapterDisplay")
+                    $xmlWriter.WriteElementString("ChapterString", $chapter.Title)
+                    $xmlWriter.WriteElementString("ChapterLanguage", "eng")
+                    $xmlWriter.WriteEndElement() # ChapterDisplay
+                    
+                    $xmlWriter.WriteEndElement() # ChapterAtom
+                    
+                    Write-Log "Глава: $($chapter.Title) - $chapterTime" -Severity Debug -Category 'Metadata'
+                }
+            }
+            
+            $xmlWriter.WriteEndElement() # EditionEntry
+            $xmlWriter.WriteEndElement() # Chapters
+            $xmlWriter.WriteEndDocument()
+            
+            Write-Log "Успешно сконвертировано $($chapters.Count) глав MP4 в XML" -Severity Information -Category 'Metadata'
+        }
+        finally {
+            $xmlWriter.Close()
+        }
+    }
+    catch {
+        Write-Log "Ошибка конвертации глав MP4: $_" -Severity Warning -Category 'Metadata'
+    }
+}
+
 function ConvertFrom-NfoToXml {
     [CmdletBinding()]
     param(
@@ -417,4 +711,5 @@ function ConvertFrom-NfoToXml {
     }
 }
 
-Export-ModuleMember -Function Invoke-ProcessMetaData, Complete-MediaFile
+Export-ModuleMember -Function Invoke-ProcessMetaData, Complete-MediaFile, `
+    Invoke-ProcessMP4Metadata, Convert-MP4ChaptersToXML, ConvertFrom-NfoToXml

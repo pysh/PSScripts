@@ -7,7 +7,17 @@ function ConvertTo-OpusAudio {
 
     try {
         Write-Log "Начало обработки аудиодорожек" -Severity Information -Category 'Audio'
-        $audioTracks = Get-AudioTrackInfo -VideoFilePath $Job.VideoPath
+        
+        # Определяем тип файла для выбора метода извлечения
+        $fileExtension = [System.IO.Path]::GetExtension($Job.VideoPath).ToLower()
+        $isMP4 = $fileExtension -eq '.mp4'
+        
+        $audioTracks = if ($isMP4) {
+            Get-MP4AudioTrackInfo -VideoFilePath $Job.VideoPath
+        } else {
+            Get-AudioTrackInfo -VideoFilePath $Job.VideoPath
+        }
+        
         $Job.AudioOutputs = [System.Collections.Generic.List[object]]::new()
         $audioPath = Join-Path -Path $Job.WorkingDir -ChildPath "audio"
         
@@ -32,6 +42,7 @@ function ConvertTo-OpusAudio {
 
         # Параллельная обработка
         $audioTracks | ForEach-Object -Parallel {
+
             function Get-SafeFileName {
                 param([string]$FileName)
                 if ([string]::IsNullOrWhiteSpace($FileName)) { return [string]::Empty }

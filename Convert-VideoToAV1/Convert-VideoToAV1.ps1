@@ -10,18 +10,18 @@ using namespace System.IO
 
 [CmdletBinding()]
 param (
-    [Parameter(Mandatory = $false)]
+    [Parameter(Mandatory = $false, Position = 0)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Container })]
-    [string]$InputDirectory = 'y:\Видео\Сериалы\Зарубежные\Пацаны (The Boys)\The.Boys.2022.S03.2160p.AMZN.WEB-DL.DDP.5.1.HDR.10.Plus.DoVi.P8\',
+    [string]$InputDirectory = 'v:\Сериалы\Зарубежные\Ходячие мертвецы (Walking Dead)\season 06\',
     
     [Parameter(Mandatory = $false)]
-    [string]$OutputDirectory = (Join-Path -Path $InputDirectory -ChildPath '.av1_out'),
+    [string]$OutputDirectory = (Join-Path -Path $InputDirectory -ChildPath '.av1'),
 
     [Parameter(Mandatory = $false)]
-    [string]$InputFilesFilter = '.*',
+    [string]$InputFilesFilter = '',
     
     [Parameter(Mandatory = $false)]
-    [Switch]$CopyFiletoTempDir = $true,
+    [Switch]$CopyFiletoTempDir = $false,
     
     [Parameter(Mandatory = $false)]
     [int]$TrimStartFrame = 0,
@@ -38,6 +38,14 @@ param (
     [Parameter(Mandatory = $false)]
     [string]$TrimTimecode = "",
     
+    [Parameter(Mandatory = $false)]
+    [System.Object]$CropParameters = @{
+        Left   = 0
+        Right  = 0
+        Top    = 0
+        Bottom = 0
+    },
+
     # Параметр для выбора энкодера (значение по умолчанию установим позже)
     [Parameter(Mandatory = $false)]
     [ValidateSet('SvtAv1Enc', 'SvtAv1EncESS', 'SvtAv1EncHDR', 'SvtAv1EncPSYEX', 'Rav1eEnc', 'AomAv1Enc')]
@@ -79,11 +87,12 @@ process {
         $videoFiles = Get-ChildItem -LiteralPath $InputDirectory -File |
             Where-Object {
                 $_.Extension -match 'mkv|mp4' -and
-                $_.Name -notmatch '_out\.mkv$' -and
-                $_.BaseName -match $InputFilesFilter
+                $_.Name -notmatch '_out\.mkv$'
             }
+        if (-not [string]::IsNullOrWhiteSpace($InputFilesFilter)) { $videoFiles = @($videoFiles | Where-Object { $_.Name -match $InputFilesFilter }) }
+
         if (-not $videoFiles) {
-            Write-Error "В директории $InputDirectory не найдены MKV файлы"
+            Write-Error "В директории $InputDirectory не найдены MKV/MP4 файлы"
             return
         }
         
@@ -94,6 +103,10 @@ process {
             $job = $null
             try {
                 Write-Log "Начало обработки файла: $($videoFile.Name)" -Severity Information -Category 'Main'
+                
+                # Определяем тип файла
+                $fileExtension = [System.IO.Path]::GetExtension($videoFile.Name).ToLower()
+                $isMP4 = $fileExtension -eq '.mp4'
                 
                 # Создание рабочей директории
                 $BaseName = [IO.Path]::GetFileNameWithoutExtension($videoFile.Name)
@@ -124,6 +137,8 @@ process {
                     WorkingDir  = $WorkingDir
                     TempFiles   = [System.Collections.Generic.List[string]]::new()
                     StartTime   = [DateTime]::Now
+                    IsMP4       = $isMP4
+                    CropParams  = $CropParameters
                 }
                 
                 # Устанавливаем выбранный энкодер
@@ -139,7 +154,12 @@ process {
                 
                 # 1. ОБРАБОТКА МЕТАДАННЫХ (первым делом)
                 Write-Log "Этап 1/3: Обработка метаданных" -Severity Information -Category 'Main'
-                $job = Invoke-ProcessMetaData -Job $job
+                
+                if ($isMP4) {
+                    $job = Invoke-ProcessMP4Metadata -Job $job
+                } else {
+                    $job = Invoke-ProcessMetaData -Job $job
+                }
                 
                 # Формирование имени выходного файла на основе метаданных
                 $finalOutputName = "${BaseName}_out.mkv"  # значение по умолчанию

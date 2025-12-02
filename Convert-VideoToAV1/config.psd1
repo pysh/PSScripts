@@ -7,8 +7,10 @@
         MkvExtract = "mkvextract.exe"
         MkvPropedit= "mkvpropedit.exe"
         VSPipe     = "vspipe.exe"
+        x265       = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\x265\x265.exe'
         SvtAv1Enc       = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp\SvtAv1EncApp.exe'
-        SvtAv1EncESS    = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-Essential\SvtAv1EncApp.exe'
+        # SvtAv1EncESS    = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-Essential\SvtAv1EncApp.exe'
+        SvtAv1EncESS    = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-Essential\SvtAv1EncApp_official.exe'
         SvtAv1EncHDR    = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-HDR\SvtAv1EncApp.exe'
         SvtAv1EncPSYEX  = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-PSYEX\SvtAv1EncApp.exe'
         Rav1eEnc        = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\rav1e\rav1e.exe'
@@ -24,6 +26,7 @@
         DeleteTempFiles = $false
         AutoCropThreshold = 1000
         TempDir = "r:\Temp\"
+        VSPipeMethod = "vspipe"  # Возможные значения: "vspipe", "ffmpeg"
     }
     
     Encoding = @{
@@ -35,17 +38,31 @@
             SvtAv1EncPSYEX = 'Tools.SvtAv1EncPSYEX'
             Rav1eEnc       = 'Tools.Rav1eEnc'
             AomAv1Enc      = 'Tools.AomAv1Enc'
+            x265           = 'Tools.x265'
         }
         
         # Энкодер по умолчанию
         DefaultEncoder = 'SvtAv1EncESS'
         
         Video = @{
+            CopyVideo = $true
             CropRound = 2
             XtraParams = @()
             
             # Параметры по энкодерам
             EncoderParams = @{
+                x265 = @{
+                    Quality = 23
+                    Preset = 'slower'
+                    BaseArgs = @('--output-depth', '10',
+                        '--no-strong-intra-smoothing',
+                        '--constrained-intra',
+                        '--range', 'limited',
+                        '--colorprim', 'bt709',
+                        '--transfer', 'bt709',
+                        '--colormatrix', 'bt709'
+                        )
+                }
                 SvtAv1Enc = @{
                     Quality = 25
                     Preset = 3
@@ -53,7 +70,7 @@
                 }
                 SvtAv1EncESS = @{
                     Speed    = 'slow' # Available speeds are: slower, slow, medium, fast, faster. Default is slow.
-                    Quality  = 'medium'  # Available qualities are: higher, high, medium, low, lower. Default is medium.
+                    Quality  = 'lower'  # Available qualities are: higher, high, medium, low, lower. Default is medium.
                     BaseArgs = @(
                         '--rc', '0'
                         '--progress', '3',
@@ -89,9 +106,20 @@
             CopyAudio = $false
             Bitrates = @{
                 Stereo   = "200k"
-                Surround = "360k"
+                Surround = "384k"
                 Multi    = "480k"
             }
+        }
+    }
+
+    VPSSources = @{
+        Video = @{
+            LSMASH     = 'clip = core.lsmas.LibavSMASHSource(r"{%VideoPath%}")'
+            LWLib      = 'clip = core.lsmas.LWLibavSource(source=r"{%VideoPath%}", cachefile=r"{%CacheFile%}", decoder="cuda")'
+            BestSource = 'clip = core.best.VideoSource(source=r"{%VideoPath%}", track=-1, fpsnum=-1, fpsden=1, rff=False, threads=0, seekpreroll=20, enable_drefs=False, use_absolute_path=False, cachemode=3, cachepath=r"{%CacheFile%}", cachesize=1000, hwdevice="cuda", extrahwframes=9, showprogress=1)'
+        }
+        Audio = @{
+            FFmpeg = 'FFmpeg'
         }
     }
 
@@ -99,6 +127,38 @@
         VapourSynth = @{
             AutoCrop = 'd:\PSScripts\Convert-VideoToAV1\Templates\AutoCropTemplate.py'
             MainScript = @'
+import vapoursynth as vs
+core = vs.core
+clip = core.lsmas.LWLibavSource(source=r"{%VideoPath%}", cachefile=r"{%CacheFile%}")
+{%trimScript%}
+
+clip = core.resize.Spline36(clip, format=vs.YUV444PS)
+ref  = core.bm3dcuda.BM3D(clip, sigma=[5, 0, 0])
+clip = core.bm3dcuda.BM3D(clip, ref, sigma=[5, 0, 0])
+clip = core.resize.Spline36(clip, format=vs.YUV420P16)
+clip = core.placebo.Shader(clip, shader=r"X:\Apps\_VideoEncoding\ffmpeg\LiftGammaGain_qwen_lite.glsl")
+clip = core.resize.Spline36(clip, format=vs.YUV420P10, dither_type="error_diffusion")
+
+#clip = core.fmtc.bitdepth(clip, bits=10)
+clip = core.std.Crop(clip, {%CropParams.Left%}, {%CropParams.Right%}, {%CropParams.Top%}, {%CropParams.Bottom%})
+clip.set_output()
+'@
+            MainHDScript = @'
+import vapoursynth as vs
+core = vs.core
+clip = core.lsmas.LWLibavSource(source=r"{%VideoPath%}", cachefile=r"{%CacheFile%}")
+{%trimScript%}
+
+clip = core.resize.Spline36(clip, format=vs.YUV420P16)
+clip = core.placebo.Shader(clip, shader=r"X:\Apps\_VideoEncoding\ffmpeg\LiftGammaGain_qwen_lite.glsl")
+clip = core.placebo.Shader(clip, shader=r"X:\Apps\_VideoEncoding\ffmpeg\adaptive-sharpen.glsl")
+clip = core.resize.Spline36(clip, format=vs.YUV420P10, dither_type="error_diffusion")
+
+#clip = core.fmtc.bitdepth(clip, bits=10)
+clip = core.std.Crop(clip, {%CropParams.Left%}, {%CropParams.Right%}, {%CropParams.Top%}, {%CropParams.Bottom%})
+clip.set_output()
+'@
+            HDRtoSDRScript = @'
 import os, sys
 import vapoursynth as vs
 from vapoursynth import core
@@ -170,7 +230,8 @@ METADATA_HDR10PLUS = 3
 METADATA_LUMINANCE = 4
 
 # Загрузка видео
-clip = core.lsmas.LWLibavSource(source=r"{%VideoPath%}", cachefile=r"{%CacheFile%}")
+clip = core.lsmas.LWLibavSource(source=r"{%VideoPath%}", cachefile=r"{%CacheFile%}") #, prefer_hw=4)
+#clip = core.bs.VideoSource(r"{%VideoPath%}", track=-1, fpsnum=-1, fpsden=1, rff=False, threads=0, seekpreroll=20, enable_drefs=False, use_absolute_path=False, cachemode=3, cachepath=r"{%CacheFile%}", cachesize=1000, hwdevice="cuda", extrahwframes=9, showprogress=1)
 {%trimScript%}
 
 # Повышаем битность для точных вычислений
@@ -178,19 +239,19 @@ clip = core.fmtc.bitdepth(clip, bits=16)
 
 clip = core.placebo.Tonemap(
    clip,
-   src_csp=CSP_DOVI,
+   src_csp=CSP_HDR10,
    dst_csp=CSP_SDR,
    dst_prim=PRIMARY_BT709,
    metadata=METADATA_AUTO,
    src_min=0.005,
    src_max=1000.0,
    dst_min=0.0,
-   dst_max=25.0,
+   dst_max=60.0,
    dynamic_peak_detection=True,
    tone_mapping_function=TONE_MAP_SPLINE,
    tone_mapping_param=0.0,
    gamut_mapping=GAMUT_MAP_PERCEPTUAL,
-   # percentile=99.99,
+   percentile=99.9,
    contrast_recovery=1
 )
 
@@ -205,6 +266,7 @@ clip = core.resize.Spline36(clip, format=vs.YUV420P10, matrix_s="709")
 
 # Обрезка
 clip = core.std.Crop(clip, {%CropParams.Left%}, {%CropParams.Right%}, {%CropParams.Top%}, {%CropParams.Bottom%})
+#clip = core.std.Crop(clip, 0, 0, 276, 276)
 
 # Экспорт
 clip.set_output()
