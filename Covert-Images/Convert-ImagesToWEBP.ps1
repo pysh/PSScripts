@@ -3,14 +3,118 @@ param (
     [Parameter(Mandatory = $false)]
     [ValidateScript({ Test-Path $_ -PathType Container })]
     [string]$SourceFolder = 'X:\temp2\xuk\',
-    
+
     [Parameter()]
     [ValidateRange(0, 100)]
     [int]$Quality = 80
 )
 
 #
-. 'C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\video_tools_AI.ps1'
+#. 'C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\video_tools_AI.ps1'
+
+<#
+.SYNOPSIS
+    Распаковывает ZIP архивы из указанной папки.
+.DESCRIPTION
+    Извлекает содержимое всех ZIP архивов в указанную папку назначения.
+.PARAMETER SourceFolderPath
+    Путь к папке с ZIP архивами.
+.PARAMETER DestinationFolderPath
+    Путь для извлечения содержимого архивов.
+.PARAMETER Overwrite
+    Перезаписывать существующие файлы (по умолчанию - нет).
+.PARAMETER CreateSubfolderForEachArchive
+    Создавать отдельную подпапку для каждого архива (по умолчанию - нет).
+#>
+function Expand-ZipArchives {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Container })]
+        [string]$SourceFolderPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationFolderPath,
+
+        [switch]$Overwrite = $false,
+        [switch]$CreateSubfolderForEachArchive = $false
+    )
+
+    # Проверяем существование исходной папки
+    if (-not (Test-Path -LiteralPath $SourceFolderPath -PathType Container)) {
+        Write-Error "Исходная папка не существует: $SourceFolderPath"
+        return
+    }
+
+    # Создаем папку назначения если ее нет
+    if (-not (Test-Path -LiteralPath $DestinationFolderPath)) {
+        try {
+            New-Item -ItemType Directory -Path $DestinationFolderPath -Force | Out-Null
+        }
+        catch {
+            Write-Error "Ошибка создания папки назначения: $_"
+            return
+        }
+    }
+
+    # Загружаем .NET сборку для работы с ZIP
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+    # Находим все ZIP файлы в исходной папке
+    $zipArchives = Get-ChildItem -LiteralPath $SourceFolderPath -Filter *.zip -File
+
+    if ($zipArchives.Count -eq 0) {
+        Write-Warning "ZIP архивы не найдены в исходной папке: ${SourceFolderPath}"
+        return
+    }
+
+    # Обрабатываем каждый архив с отображением прогресса
+    $totalArchives = $zipArchives.Count
+    $processedArchives = 0
+
+    foreach ($archive in $zipArchives) {
+        try {
+            # Обновляем прогресс
+            $processedArchives++
+            $percentComplete = [math]::Floor(($processedArchives / $totalArchives) * 100)
+            Write-Progress -Activity "Распаковка ZIP архивов" `
+                -Status "Обработка $($archive.Name) ($processedArchives из $totalArchives)" `
+                -PercentComplete $percentComplete
+
+            if ($CreateSubfolderForEachArchive) {
+                # Создаем подпапку с именем архива (без расширения)
+                $extractionPath = Join-Path -Path $DestinationFolderPath -ChildPath $archive.BaseName
+            }
+            else {
+                $extractionPath = $DestinationFolderPath
+            }
+
+            # Создаем папку для извлечения
+            if (-not (Test-Path -LiteralPath $extractionPath)) {
+                New-Item -ItemType Directory -Path $extractionPath | Out-Null
+            }
+
+            # Извлекаем архив
+            if ($Overwrite) {
+                # Перезаписываем существующие файлы
+                [System.IO.Compression.ZipFile]::ExtractToDirectory($archive.FullName, $extractionPath, $true)
+            }
+            else {
+                # Не перезаписываем существующие файлы
+                [System.IO.Compression.ZipFile]::ExtractToDirectory($archive.FullName, $extractionPath)
+            }
+
+            # Удаляем архив после извлечения
+            Remove-Item -LiteralPath $archive.FullName -Force
+        }
+        catch {
+            Write-Error "Ошибка извлечения $($archive.Name): $_"
+        }
+    }
+
+    # Очищаем индикатор прогресса
+    Write-Progress -Activity "Распаковка ZIP архивов" -Completed
+}
 
 # Extract archives
 . C:\Users\pauln\OneDrive\Sources\Repos\PSScripts\tools.ps1
@@ -26,7 +130,7 @@ if (-not (Get-Command cwebp -ErrorAction SilentlyContinue)) {
 }
 
 # Get supported image files
-$imageFiles = Get-ChildItem -Path $SourceFolder -Include @('*.jpg', '*.jpeg', '*.png', '*.bmp') -File -Recurse
+$imageFiles = Get-ChildItem -Path $SourceFolder -Include @('*.jpg', '*.jpeg', '*.png', '*.bmp', '*.gif') -File -Recurse
 
 if (-not $imageFiles) {
     Write-Warning "No supported image files found in $SourceFolder"
@@ -61,7 +165,7 @@ foreach ($file in $imageFiles) {
     }
 
     # Проверка подозрений на дубли
-    $existingFiles = Get-ChildItem -Path $file.Directory.FullName | 
+    $existingFiles = Get-ChildItem -Path $file.Directory.FullName |
     Where-Object { ($_.BaseName -match ('^\d{14}__' + [regex]::Escape($file.BaseName) + '$')) }
     if ($existingFiles.Count -gt 0) {
         foreach ($existFile in $existingFiles) {
@@ -116,15 +220,15 @@ foreach ($file in $imageFiles) {
             if ($result.ExitCode -ne 0) {
                 throw "Conversion failed with exit code: $($result.ExitCode)"
             }
-        
+
             if (Test-Path -LiteralPath $webpFile) {
                 $webpSize = (Get-Item -LiteralPath $webpFile).Length
-            
+
                 # Verify successful conversion
                 if ($webpSize -gt 0 -and $webpSize -lt $file.Length) {
                 (Get-Item -LiteralPath $webpFile).CreationTime = $file.CreationTime
                 (Get-Item -LiteralPath $webpFile).LastWriteTime = $file.LastWriteTime
-                
+
                     # Only remove original if conversion was successful
                     Remove-Item -LiteralPath $file.FullName -Force
                     $webpTotalSize += $webpSize
@@ -142,7 +246,7 @@ foreach ($file in $imageFiles) {
         catch {
             $failed++
             Write-Error "Failed to convert $($file.Name): $_"
-        
+
             # Cleanup failed conversion
             if (Test-Path -LiteralPath $webpFile) {
                 Remove-Item -LiteralPath $webpFile -Force

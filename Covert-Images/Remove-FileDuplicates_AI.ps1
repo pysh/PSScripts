@@ -8,7 +8,7 @@ function Remove-DuplicateFiles {
         [string]$Priority = "LongestPath",
         [switch]$Recurse,
         [switch]$Quiet,
-        [int]$BatchSize = 50000
+        [int]$BatchSize = 10000
     )
 
     $sqliteDllPath = "X:\temp2\System.Data.SQLite.dll"
@@ -81,21 +81,26 @@ function Remove-DuplicateFiles {
 
     # Загружаем все данные из БД в память
     $cacheTable = Get-SQLiteData $connection "SELECT FilePath, LastWriteTime FROM FileHashes"
-    $cache = @{}
+    $dbCache = @{}
     if ($cacheTable -and $cacheTable.Count -gt 0) {
         foreach ($row in $cacheTable) {
-            $cache[$row.FilePath] = [datetime]::Parse($row.LastWriteTime)
+            $dbCache[$row.FilePath] = $row.LastWriteTime
         }
     }
 
     $allFiles = @(Get-ChildItem -Path $Path -File -Recurse:$Recurse.IsPresent)
     if (-not $Quiet) { Write-Host "Found $($allFiles.Count) files for processing" -ForegroundColor Cyan }
 
-    # Удаляем отсутствующие файлы из БД
-    $existingPaths = New-Object System.Collections.Generic.HashSet[string]
-    foreach ($f in $allFiles) { [void]$existingPaths.Add($f.FullName) }
+    # Создаем хэш-таблицу для файлов на диске
+    $diskFiles = @{}
+    $fileObjects = @{}
+    foreach ($file in $allFiles) {
+        $diskFiles[$file.FullName] = $file.LastWriteTime.ToString("o")
+        $fileObjects[$file.FullName] = $file
+    }
 
-    $pathsToRemove = $cache.Keys | Where-Object { -not $existingPaths.Contains($_) }
+    # 1. Удаляем отсутствующие файлы из БД
+    $pathsToRemove = $dbCache.Keys | Where-Object { -not $diskFiles.ContainsKey($_) }
     if ($pathsToRemove.Count -gt 0) {
         if (-not $Quiet) { Write-Verbose "Removing $($pathsToRemove.Count) stale DB entries" }
         Invoke-SQLiteCommand $connection "BEGIN TRANSACTION"
@@ -105,35 +110,51 @@ function Remove-DuplicateFiles {
         Invoke-SQLiteCommand $connection "COMMIT"
     }
 
+    # 2. Находим файлы, которые нужно обновить (изменились или новые) через сравнение хэш-таблиц
     $filesToUpdate = [System.Collections.Generic.List[object]]::new()
+    
+    # Новые файлы (есть на диске, но нет в БД)
+    $newFiles = $diskFiles.Keys | Where-Object { -not $dbCache.ContainsKey($_) }
+    
+    # Измененные файлы (есть в обоих, но разное время изменения)
+    $changedFiles = @()
+    foreach ($filePath in $diskFiles.Keys) {
+        if ($dbCache.ContainsKey($filePath)) {
+            try {
+                $cachedDt = [datetime]::Parse($dbCache[$filePath])
+                $diskDt = [datetime]::Parse($diskFiles[$filePath])
+                if ($cachedDt -ne $diskDt) {
+                    $changedFiles += $filePath
+                }
+            } catch {
+                $changedFiles += $filePath
+            }
+        }
+    }
+
+    $allFilesToProcess = $newFiles + $changedFiles
     $fileCounter = 0
 
-    foreach ($file in $allFiles) {
+    if (-not $Quiet) {
+        Write-Progress -Activity "Analyzing files" -Status "Preparing hash calculation..." -PercentComplete 0
+    }
+
+    foreach ($filePath in $allFilesToProcess) {
         $fileCounter++
         if (-not $Quiet) {
-            $percentComplete = ($fileCounter / $allFiles.Count) * 100
-            Write-Progress -Activity "Analyzing files" -Status "File $fileCounter of $($allFiles.Count)" `
-                -CurrentOperation $file.FullName -PercentComplete $percentComplete
+            $percentComplete = ($fileCounter / $allFilesToProcess.Count) * 100
+            Write-Progress -Activity "Calculating hashes" -Status "File $fileCounter of $($allFilesToProcess.Count)" `
+                -CurrentOperation $filePath -PercentComplete $percentComplete
         }
 
-        $needsUpdate = $true
-        if ($cache.ContainsKey($file.FullName)) {
-            $cachedLast = $cache[$file.FullName]
-            try {
-                $cachedDt = [datetime]::Parse($cachedLast)
-                if ($cachedDt -eq $file.LastWriteTime) {
-                    $needsUpdate = $false
-                }
-            } catch { }
-        }
-
-        if ($needsUpdate) {
-            $hashObj = Get-FileHash -Path $file.FullName -Algorithm MD5 -ErrorAction SilentlyContinue
+        $file = $fileObjects[$filePath]
+        if ($file) {
+            $hashObj = Get-FileHash -Path $filePath -Algorithm MD5 -ErrorAction SilentlyContinue
             if ($hashObj) {
                 $filesToUpdate.Add([PSCustomObject]@{
-                    FilePath      = $file.FullName
+                    FilePath      = $filePath
                     FileSize      = $file.Length
-                    LastWriteTime = $file.LastWriteTime.ToString("o")
+                    LastWriteTime = $diskFiles[$filePath]
                     MD5Hash       = $hashObj.Hash
                 })
 
@@ -160,7 +181,7 @@ function Remove-DuplicateFiles {
         }
     }
 
-    # Обработка оставшихся файлов
+    # Обработка оставшихся файлов для обновления
     if ($filesToUpdate.Count -gt 0) {
         if (-not $Quiet) { Write-Verbose "Writing final batch of $($filesToUpdate.Count) records" }
         Invoke-SQLiteCommand $connection "BEGIN TRANSACTION"
@@ -182,7 +203,7 @@ function Remove-DuplicateFiles {
 
     if (-not $Quiet) { Write-Progress -Activity "Analyzing files" -Completed }
 
-
+    # Дальнейшая обработка дубликатов (остается без изменений)
     $duplicateGroups = Get-SQLiteData $connection @"
     SELECT MD5Hash, COUNT(*) as Count, GROUP_CONCAT(FilePath, '|') as Files
     FROM FileHashes
@@ -194,12 +215,12 @@ function Remove-DuplicateFiles {
     $totalSpace = 0
     $deletedFilesCache = [System.Collections.Generic.List[string]]::new()
 
+    if (-not $Quiet) {
+        Write-Progress -Activity "Processing duplicates" -Status "Preparing..."
+    }
 
     $groupCounter = 0
     if ($duplicateGroups -and $duplicateGroups.Rows.Count -gt 0) {
-        if (-not $Quiet) {
-            Write-Progress -Activity "Processing duplicates" -Status "Preparing..."
-        }
         foreach ($group in $duplicateGroups) {
             $groupCounter++
 
@@ -269,6 +290,9 @@ function Remove-DuplicateFiles {
             }
         }
     }
+    if (-not $Quiet) {
+        Write-Progress -Activity "Processing duplicates" -Completed
+    }
 
     if ($deletedFilesCache.Count -gt 0) {
         if (-not $Quiet) { Write-Verbose "Cleaning cache for $($deletedFilesCache.Count) deleted files" }
@@ -300,5 +324,6 @@ function Remove-DuplicateFiles {
 
     return $report
 }
+
 Write-Host 'Remove-DuplicateFiles...'
-Remove-DuplicateFiles -Path 'X:\temp2\xuk\' -Recurse -Verbose -Debug -Confirm:$true
+Remove-DuplicateFiles -Path 'X:\temp2\xuk\' -Recurse -Verbose -Debug -Confirm:$false | Out-Null
