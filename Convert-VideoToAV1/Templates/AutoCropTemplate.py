@@ -24,7 +24,7 @@ PRIMARIES = {
 }
 
 # Load source
-clip = core.lsmas.LWLibavSource(r"{input_file}")
+clip = core.lsmas.LWLibavSource(source=r"{input_file}", cachefile=r"{cache_file}")
 props = clip.get_frame(0).props
 
 # Determine matrix, transfer and primaries
