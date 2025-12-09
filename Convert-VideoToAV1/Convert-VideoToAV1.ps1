@@ -12,7 +12,7 @@ using namespace System.IO
 param (
     [Parameter(Mandatory = $false, Position = 0)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Container })]
-    [string]$InputDirectory = 'v:\Сериалы\Зарубежные\Ходячие мертвецы (Walking Dead)\season 06\',
+    [string]$InputDirectory = 'y:\.temp\YT_y\Стендап комики 4k\',
     
     [Parameter(Mandatory = $false)]
     [string]$OutputDirectory = (Join-Path -Path $InputDirectory -ChildPath '.av1'),
@@ -39,17 +39,22 @@ param (
     [string]$TrimTimecode = "",
     
     [Parameter(Mandatory = $false)]
-    [System.Object]$CropParameters = @{
+    [System.Object]$CropParameters<#  = @{
         Left   = 0
         Right  = 0
         Top    = 0
         Bottom = 0
-    },
+    } #>,
 
     # Параметр для выбора энкодера (значение по умолчанию установим позже)
     [Parameter(Mandatory = $false)]
-    [ValidateSet('SvtAv1Enc', 'SvtAv1EncESS', 'SvtAv1EncHDR', 'SvtAv1EncPSYEX', 'Rav1eEnc', 'AomAv1Enc')]
-    [string]$Encoder
+    [ValidateSet('x265', 'SvtAv1Enc', 'SvtAv1EncESS', 'SvtAv1EncHDR', 'SvtAv1EncPSYEX', 'Rav1eEnc', 'AomAv1Enc')]
+    [string]$Encoder,
+
+    # Новый параметр: путь к custom template VPY файлу
+    [Parameter(Mandatory = $false)]
+    [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
+    [string]$TemplatePath
 )
 
 begin {
@@ -249,8 +254,8 @@ process {
 
                 # 3. ОБРАБОТКА ВИДЕО (третий, самый долгий этап)
                 Write-Log "Этап 3/3: Обработка видео" -Severity Information -Category 'Main'
-                $job = ConvertTo-Av1Video -Job $job -Debug
-                
+                $job = ConvertTo-Av1Video -Job $job -TemplatePath $TemplatePath -Debug
+
                 # ФИНАЛИЗАЦИЯ
                 Write-Log "Создание итогового файла" -Severity Information -Category 'Main'
                 Complete-MediaFile -Job $job

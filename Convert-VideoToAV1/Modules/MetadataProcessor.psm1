@@ -191,11 +191,13 @@ function Complete-MediaFile {
             $airDateFormatted
         }
         $mkvArgs = @(
-            '--ui-language', 'en', '--priority', 'lower',
+            '--ui-language', 'en',
+            '--priority', 'lower',
             '--output', $Job.FinalOutput,
             $Job.VideoOutput,
-            '--title', $fileTitle,
-            '--no-date','--no-track-tags'
+            $(if (-not [string]::IsNullOrWhiteSpace($fileTitle) ) { @('--title', $fileTitle) }),
+            '--no-date',
+            '--no-track-tags'
         )
 
         # Аудиодорожки

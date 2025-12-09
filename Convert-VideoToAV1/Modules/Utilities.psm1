@@ -177,13 +177,16 @@ function Get-VideoCropParameters {
         $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
         $templatePath = $global:Config.Templates.VapourSynth.AutoCrop
         
-        if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
-            throw "Файл шаблона VapourSynth не найден: $templatePath"
+        # Получаем абсолютный путь к шаблону
+        $scriptDir = Split-Path -Parent $PSScriptRoot
+        $templateFullPath = Join-Path $scriptDir $templatePath
+        
+        if (-not (Test-Path -LiteralPath $templateFullPath -PathType Leaf)) {
+            throw "Файл шаблона VapourSynth не найден: $templateFullPath"
         }
 
-        $scriptContent = Get-Content -LiteralPath $templatePath -Raw
+        $scriptContent = Get-Content -LiteralPath $templateFullPath -Raw
         $scriptContent = $scriptContent -replace '\{input_file\}', $InputFile
-        $scriptContent = $scriptContent -replace '\{cache_file\}', $Job.CacheFile
         Set-Content -LiteralPath $tmpScriptFile -Value $scriptContent -Force
 
         $AutoCropPath = $global:VideoTools.AutoCrop
@@ -592,6 +595,10 @@ function Get-EncoderParams {
     
     # Добавляем специфичные параметры для каждого энкодера
     switch ($EncoderName) {
+        "x265" {
+            $baseParams += @('--crf', $EncoderConfig.Quality)
+            $baseParams += @('--preset', $EncoderConfig.Preset)
+        }
         "SvtAv1Enc" {
             $baseParams += @('--crf', $EncoderConfig.Quality)
             $baseParams += @('--preset', $EncoderConfig.Preset)
@@ -628,6 +635,7 @@ function Get-EncoderParams {
     }
     return $baseParams
 }
+
 function Get-EncoderConfig {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$EncoderName)

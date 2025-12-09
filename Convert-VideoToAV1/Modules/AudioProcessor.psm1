@@ -111,7 +111,7 @@ function ConvertTo-OpusAudio {
                         throw "Ошибка копирования аудио (код $LASTEXITCODE)"
                     }
                     
-                    Write-Log "Аудио скопировано без перекодировки: $($track.CodecName)" -Severity Verbose -Category 'Audio'
+                    Write-Host "Аудио скопировано без перекодировки: $($track.CodecName)" -Severity Verbose -Category 'Audio'
                 } else {
                     # Перекодирование в Opus
                     $tempAudio = [IO.Path]::ChangeExtension($audioOutput, "tmp.flac")
