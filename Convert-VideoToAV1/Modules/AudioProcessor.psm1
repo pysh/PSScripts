@@ -8,6 +8,18 @@ function ConvertTo-OpusAudio {
     try {
         Write-Log "Начало обработки аудиодорожек" -Severity Information -Category 'Audio'
         
+        # Определяем режим копирования аудио (с учетом переопределения параметром)
+        # Берем значение из конфига по умолчанию
+        $CopyAudioMode = $global:Config.Encoding.Audio.CopyAudio
+        
+        # Если параметр CopyAudio передан в Job, переопределяем
+        if ($Job.ContainsKey('CopyAudioOverride')) {
+            $CopyAudioMode = $Job.CopyAudioOverride
+            Write-Log "Режим CopyAudio переопределен: $CopyAudioMode" -Severity Information -Category 'Audio'
+        }
+        
+        Write-Log "Режим обработки аудио: $(if ($CopyAudioMode) { 'копирование' } else { 'перекодирование в Opus' })" -Severity Information -Category 'Audio'
+        
         # Определяем тип файла для выбора метода извлечения
         $fileExtension = [System.IO.Path]::GetExtension($Job.VideoPath).ToLower()
         $isMP4 = $fileExtension -eq '.mp4'
@@ -29,7 +41,9 @@ function ConvertTo-OpusAudio {
         $tools = $global:VideoTools.Clone()
         $bitrates = $global:Config.Encoding.Audio.Bitrates
         $keepTempAudioFiles = $global:Config.Processing.keepTempAudioFiles
-        $copyAudio = $global:Config.Encoding.Audio.CopyAudio
+        
+        # Используем $CopyAudioMode вместо старой переменной $copyAudio
+        $copyAudio = $CopyAudioMode  # Переменная для использования в блоке ForEach-Object -Parallel
 
         # Параметры обрезки
         $trimParams = @()
@@ -58,7 +72,7 @@ function ConvertTo-OpusAudio {
             $job = $using:Job
             $keepTempAudioFiles = $using:keepTempAudioFiles
             $trimParams = $using:trimParams
-            $copyAudio = $using:copyAudio
+            $copyAudio = $using:copyAudio  # Используем локальную переменную
 
             $outputFileName = if ($copyAudio) {
                 # Используем оригинальный кодек для имени файла при копировании
@@ -218,7 +232,6 @@ function ConvertTo-OpusAudio {
         $copiedTracks = ($Job.AudioOutputs | Where-Object { $_.Codec -ne 'opus (extracted)' -and $_.Codec -ne 'opus (converted)' }).Count
         
         if ($copyAudio) {
-            $action = "скопировано"
             Write-Log "Успешно скопировано $copiedTracks аудиодорожек (без перекодировки)" -Severity Success -Category 'Audio'
         } else {
             if ($opusExtracted -gt 0) {
@@ -250,7 +263,7 @@ function Get-AudioProcessingRecommendation {
         [Parameter(Mandatory = $true)]
         [string]$VideoPath,
         
-        [bool]$CopyAudioMode = $false
+        [bool]$CopyAudioMode = $global:Config.Encoding.Audio.CopyAudio
     )
     
     try {

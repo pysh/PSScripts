@@ -29,7 +29,7 @@
     }
     
     Encoding   = @{
-        # Доступные энкодеры
+        # Доступные энкодеры (основные исполняемые файлы)
         AvailableEncoders = @{
             x265           = 'Tools.x265'
             SvtAv1Enc      = 'Tools.SvtAv1Enc'
@@ -42,9 +42,10 @@
         
         # Энкодер по умолчанию
         DefaultEncoder    = 'SvtAv1EncESS'
-
+        
+        # Управление копированием (можно переопределить параметрами скрипта)
         Audio             = @{
-            CopyAudio = $false
+            CopyAudio = $false  # true = копировать без перекодировки
             Bitrates  = @{
                 Stereo   = "192k"
                 Surround = "384k"
@@ -165,7 +166,6 @@
                         '--rc', '0',
                         '--progress', '3',
                         '--auto-tiling', '0',
-                        #'--aq-mode', 2, '--scm', 0, '--film-grain-denoise', 0, '--film-grain', 12, '--enable-overlays', 1,
                         '--color-primaries', '1',
                         '--transfer-characteristics', '1',
                         '--matrix-coefficients', '1'

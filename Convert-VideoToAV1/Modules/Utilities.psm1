@@ -737,13 +737,21 @@ function Get-EncoderParams {
     
     $baseParams = @()
     
-    # Базовые параметры из конфига
     if ($EncoderConfig.BaseArgs) {
         $baseParams += $EncoderConfig.BaseArgs
     }
     
+    # Определяем базовое имя энкодера для свитча
+    $baseEncoderName = if ($EncoderName -match '^(SvtAv1EncESS|SvtAv1Enc|SvtAv1EncHDR|SvtAv1EncPSYEX)') {
+        $matches[1]
+    } elseif ($EncoderName -match '^(x265|Rav1eEnc|AomAv1Enc)') {
+        $matches[1]
+    } else {
+        $EncoderName
+    }
+
     # Добавляем специфичные параметры для каждого энкодера
-    switch ($EncoderName) {
+    switch ($baseEncoderName) {
         "x265" {
             $baseParams += @('--crf', $EncoderConfig.Quality)
             $baseParams += @('--preset', $EncoderConfig.Preset)
@@ -753,10 +761,10 @@ function Get-EncoderParams {
             $baseParams += @('--preset', $EncoderConfig.Preset)
         }
         "SvtAv1EncESS" {
-            if (-not ([string]::IsNullOrWhiteSpace($EncoderConfig.Quality))) {
+            if ($EncoderConfig.Quality -and (-not ([string]::IsNullOrWhiteSpace($EncoderConfig.Quality)))) {
                 $baseParams += @('--quality', $EncoderConfig.Quality)
             }
-            if (-not ([string]::IsNullOrWhiteSpace($EncoderConfig.Speed))) {
+            if ($EncoderConfig.Speed -and (-not ([string]::IsNullOrWhiteSpace($EncoderConfig.Speed)))) {
                 $baseParams += @('--speed', $EncoderConfig.Speed)
             }
         }
@@ -785,13 +793,72 @@ function Get-EncoderParams {
     return $baseParams
 }
 
+function Test-EncoderPreset {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$EncoderName,
+        [switch]$VerboseInfo
+    )
+    
+    try {
+        $availableEncoders = $global:Config.Encoding.AvailableEncoders.Keys
+        $presets = $global:Config.Encoding.Video.EncoderParams.Keys
+        
+        $result = @{
+            EncoderName = $EncoderName
+            IsAvailableEncoder = $EncoderName -in $availableEncoders
+            IsPreset = $EncoderName -in $presets
+            HasConfig = $global:Config.Encoding.Video.EncoderParams.ContainsKey($EncoderName)
+            BaseEncoder = $null
+            Config = $null
+        }
+        
+        if ($result.HasConfig) {
+            $result.Config = $global:Config.Encoding.Video.EncoderParams[$EncoderName]
+            
+            # Определяем базовый энкодер
+            if ($EncoderName -match '^(SvtAv1EncESS|SvtAv1Enc|SvtAv1EncHDR|SvtAv1EncPSYEX)') {
+                $result.BaseEncoder = $matches[1]
+            }
+        }
+        
+        if ($VerboseInfo) {
+            Write-Log "Проверка пресета '$EncoderName':" -Severity Information
+            Write-Log "  Доступный энкодер: $($result.IsAvailableEncoder)" -Severity Information
+            Write-Log "  Пресет: $($result.IsPreset)" -Severity Information
+            Write-Log "  Есть конфиг: $($result.HasConfig)" -Severity Information
+            Write-Log "  Базовый энкодер: $($result.BaseEncoder)" -Severity Information
+        }
+        
+        return [PSCustomObject]$result
+    }
+    catch {
+        Write-Log "Ошибка проверки пресета: $_" -Severity Error
+        throw
+    }
+}
+
 function Get-EncoderConfig {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$EncoderName)
     
     try {
+        # Проверяем наличие пресета в конфиге
         if (-not $global:Config.Encoding.Video.EncoderParams.ContainsKey($EncoderName)) {
-            throw "Конфигурация для энкодера '$EncoderName' не найдена"
+            Write-Log "Конфигурация для энкодера '$EncoderName' не найдена. Поиск пресетов..." -Severity Warning -Category 'Config'
+            
+            # Ищем пресеты по шаблону (например, SvtAv1EncESS_*)
+            $presetPattern = $EncoderName -replace '_.*$', '*'
+            $matchingPresets = $global:Config.Encoding.Video.EncoderParams.Keys | Where-Object { $_ -like $presetPattern }
+            
+            if ($matchingPresets.Count -eq 0) {
+                throw "Конфигурация для энкодера '$EncoderName' не найдена и подходящих пресетов не обнаружено"
+            }
+            
+            # Используем первый найденный пресет
+            $fallbackEncoder = $matchingPresets[0]
+            Write-Log "Используется пресет '$fallbackEncoder' для '$EncoderName'" -Severity Information -Category 'Config'
+            return $global:Config.Encoding.Video.EncoderParams[$fallbackEncoder]
         }
         
         return $global:Config.Encoding.Video.EncoderParams[$EncoderName]

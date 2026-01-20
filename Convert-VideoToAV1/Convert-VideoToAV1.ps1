@@ -42,6 +42,12 @@ param (
     [string]$TrimTimecode = "",
     
     [Parameter(Mandatory = $false)]
+    [bool]$CopyAudio = $false,
+    
+    [Parameter(Mandatory = $false)]
+    [bool]$CopyVideo = $false,
+
+    [Parameter(Mandatory = $false)]
     [System.Object]$CropParameters<#   = @{
         Left   = 0
         Right  = 0
@@ -51,7 +57,10 @@ param (
 
     # Параметр для выбора энкодера (значение по умолчанию установим позже)
     [Parameter(Mandatory = $false)]
-    [ValidateSet('x265', 'SvtAv1Enc', 'SvtAv1EncESS', 'SvtAv1EncHDR', 'SvtAv1EncPSYEX', 'Rav1eEnc', 'AomAv1Enc')]
+    [ValidateSet(
+        'x265', 'SvtAv1Enc', 'SvtAv1EncESS', 'SvtAv1EncHDR',
+        'SvtAv1EncPSYEX', 'Rav1eEnc', 'AomAv1Enc', 'SvtAv1EncESS_grain'
+    )]
     [string]$Encoder,
 
     # Новый параметр: путь к custom template VPY файлу
@@ -83,7 +92,27 @@ begin {
     if (-not $PSBoundParameters.ContainsKey('Encoder')) {
         $Encoder = $global:Config.Encoding.DefaultEncoder
     }
+
+    # Проверяем доступность энкодера/пресета
+    $availableEncoders = $global:Config.Encoding.AvailableEncoders.Keys
+    $encoderExists = $availableEncoders -contains $Encoder -or 
+    $global:Config.Encoding.Video.EncoderParams.ContainsKey($Encoder)
+
+    if (-not $encoderExists) {
+        Write-Log "Предупреждение: Энкодер '$Encoder' не найден в AvailableEncoders, но может быть пресетом" -Severity Warning -Category 'Config'
+    }
     
+    # ПЕРЕОПРЕДЕЛЕНИЕ ПАРАМЕТРОВ КОНФИГА
+    if ($PSBoundParameters.ContainsKey('CopyAudio')) {
+        $global:Config.Encoding.Audio.CopyAudio = $CopyAudio
+        Write-Log "Переопределен CopyAudio: $CopyAudio" -Severity Information -Category 'Config'
+    }
+    
+    if ($PSBoundParameters.ContainsKey('CopyVideo')) {
+        $global:Config.Encoding.Video.CopyVideo = $CopyVideo
+        Write-Log "Переопределен CopyVideo: $CopyVideo" -Severity Information -Category 'Config'
+    }
+
     # Проверка инструментов
     foreach ($tool in $global:VideoTools.GetEnumerator()) {
         if (-not (Get-Command -Name $tool.Value -ErrorAction SilentlyContinue)) {
@@ -92,7 +121,7 @@ begin {
         Write-Log "$($tool.Name):`t$($tool.Value)" Information -Category "Tools"
     }
     
-    if(-not (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
+    if (-not (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
         New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
     }
 
@@ -103,10 +132,10 @@ process {
     try {
         # Поиск видеофайлов
         $videoFiles = Get-ChildItem -LiteralPath $InputDirectory -File |
-            Where-Object {
-                $_.Extension -match 'mkv|mp4' -and
-                $_.Name -notmatch '_out\.mkv$'
-            }
+        Where-Object {
+            $_.Extension -match 'mkv|mp4' -and
+            $_.Name -notmatch '_out\.mkv$'
+        }
         if (-not [string]::IsNullOrWhiteSpace($InputFilesFilter)) { $videoFiles = @($videoFiles | Where-Object { $_.Name -match $InputFilesFilter }) }
 
         if (-not $videoFiles) {
@@ -142,7 +171,8 @@ process {
                         if (Test-Path $nfoSrc) { Copy-Item -Path $nfoSrc -Destination $nfoDst -Force }
                     }
                     $dest
-                } else {
+                }
+                else {
                     $videoFile.FullName
                 }
                 
@@ -150,15 +180,15 @@ process {
                 
                 # Инициализация job
                 $job = @{
-                    VideoPath   = $videoFileTmp.FullName
-                    BaseName    = $BaseName
-                    WorkingDir  = $WorkingDir
-                    TempFiles   = [System.Collections.Generic.List[string]]::new()
-                    StartTime   = [DateTime]::Now
-                    IsMP4       = $isMP4
-                    CropParams  = $CropParameters
-                }
-                
+                    VideoPath         = $videoFileTmp.FullName
+                    BaseName          = $BaseName
+                    WorkingDir        = $WorkingDir
+                    TempFiles         = [System.Collections.Generic.List[string]]::new()
+                    StartTime         = [DateTime]::Now
+                    IsMP4             = $isMP4
+                    CropParams        = $CropParameters
+                    CopyAudioOverride = $CopyAudio  # Передаем параметр переопределения
+                }                
                 # Если используется временный файл, то добавляем его в список для удаления
                 if ($CopyFiletoTempDir -and ($videoFileTmp.FullName -ne $videoFile.FullName)) {
                     $Job.TempFiles.Add($videoFileTmp.FullName)
@@ -180,7 +210,8 @@ process {
                 
                 if ($isMP4) {
                     $job = Invoke-ProcessMP4Metadata -Job $job
-                } else {
+                }
+                else {
                     $job = Invoke-ProcessMetaData -Job $job
                 }
                 
@@ -209,18 +240,19 @@ process {
                         $airDate = if ($job.NFOFields.AIR_DATE) { $job.NFOFields.AIR_DATE } else { $job.NFOFields.DATE_RELEASED }
                         if ($airDate -and $airDate -match "^\d{4}-\d{2}-\d{2}") {
                             $airDateFormatted = $airDate
-                        } else {
+                        }
+                        else {
                             $airDateFormatted = "0000-00-00"
                         }
                         
                         # Формируем имя файла
                         $finalOutputName = "{0} - s{1:00}e{2:00} - {3} [{4}][{5}][av1]_out.mkv" -f `
                             $job.NFOFields.SHOWTITLE,
-                            [int]$job.NFOFields.SEASON_NUMBER,
-                            [int]$job.NFOFields.PART_NUMBER,
-                            $job.NFOFields.TITLE,
-                            $airDateFormatted,
-                            $resolution
+                        [int]$job.NFOFields.SEASON_NUMBER,
+                        [int]$job.NFOFields.PART_NUMBER,
+                        $job.NFOFields.TITLE,
+                        $airDateFormatted,
+                        $resolution
                         
                         # Заменяем недопустимые символы в имени файла
                         $invalidChars = [IO.Path]::GetInvalidFileNameChars()
@@ -249,17 +281,21 @@ process {
                 # Расчет параметров обрезки
                 $job.TrimStartSeconds = if ($TrimStartFrame -gt 0) { 
                     $TrimStartFrame / $frameRate 
-                } elseif ($TrimTimecode) { 
+                }
+                elseif ($TrimTimecode) { 
                     ConvertTo-Seconds -TimeString $TrimTimecode -FrameRate $frameRate
-                } else { 
+                }
+                else { 
                     $TrimStartSeconds 
                 }
                 
                 $job.TrimDurationSeconds = if ($TrimEndFrame -gt 0 -and $TrimStartFrame -gt 0) { 
                     ($TrimEndFrame - $TrimStartFrame) / $frameRate 
-                } elseif ($TrimEndSeconds -gt 0 -and $TrimStartSeconds -gt 0) { 
+                }
+                elseif ($TrimEndSeconds -gt 0 -and $TrimStartSeconds -gt 0) { 
                     $TrimEndSeconds - $TrimStartSeconds 
-                } else { 
+                }
+                else { 
                     0 
                 }
                 
@@ -267,7 +303,7 @@ process {
                 
                 # 2. ОБРАБОТКА АУДИО (второй этап)
                 # Анализ аудиодорожек для рекомендаций
-                if (-not $CopyAudioMode) {
+                if (-not $global:Config.Encoding.Audio.CopyAudio) {
                     $audioRecommendation = Get-AudioProcessingRecommendation -VideoPath $videoFileTmp.FullName
                     if ($audioRecommendation) {
                         Write-Log "Анализ аудио: $($audioRecommendation.TotalTracks) дорожек" -Severity Information -Category 'Audio'
@@ -275,7 +311,8 @@ process {
                         
                         if ($audioRecommendation.RecommendedAction -eq 'extract_all') {
                             Write-Log "Все дорожки уже в Opus - будет быстрое извлечение" -Severity Success -Category 'Audio'
-                        } elseif ($audioRecommendation.RecommendedAction -eq 'mixed') {
+                        }
+                        elseif ($audioRecommendation.RecommendedAction -eq 'mixed') {
                             Write-Log "Смешанный режим: извлечение Opus + перекодирование остальных" -Severity Information -Category 'Audio'
                         }
                     }

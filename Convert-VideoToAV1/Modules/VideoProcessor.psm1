@@ -15,7 +15,8 @@ function Test-X265VpySupport {
         if ($helpOutput -match "--input" -and $helpOutput -match "y4m") {
             Write-Log "x265 поддерживает прямое чтение VPY файлов" -Severity Information -Category 'Video'
             return $true
-        } else {
+        }
+        else {
             Write-Log "x265 не поддерживает прямое чтение VPY файлов, будет использоваться vspipe" -Severity Warning -Category 'Video'
             return $false
         }
@@ -71,7 +72,12 @@ function ConvertTo-Av1Video {
     
     try {
         # Проверяем, нужно ли перекодировать видео
-        $copyVideo = $global:Config.Encoding.Video.CopyVideo
+        $copyVideo = if ($PSBoundParameters.ContainsKey('CopyVideo')) {
+            $CopyVideo
+        }
+        else {
+            $global:Config.Encoding.Video.CopyVideo
+        }
         
         if ($copyVideo) {
             # Ремуксинг без перекодирования
@@ -88,11 +94,13 @@ function ConvertTo-Av1Video {
             $Job.ScriptFile = Join-Path -Path $Job.WorkingDir -ChildPath "$($Job.BaseName).vpy"
             $Job.CacheFile = Join-Path -Path $Job.WorkingDir -ChildPath "$($Job.BaseName).lwi"
             $Job.VideoOutput = Join-Path -Path $Job.WorkingDir -ChildPath "$($Job.BaseName).ivf"
-        } elseif ($isHEVCEncoder) {
+        }
+        elseif ($isHEVCEncoder) {
             $Job.ScriptFile = Join-Path -Path $Job.WorkingDir -ChildPath "$($Job.BaseName).vpy"
             $Job.CacheFile = Join-Path -Path $Job.WorkingDir -ChildPath "$($Job.BaseName).lwi"
             $Job.VideoOutput = Join-Path -Path $Job.WorkingDir -ChildPath "$($Job.BaseName).hevc"
-        } else {
+        }
+        else {
             throw "Неподдерживаемый энкодер: $($Job.Encoder)"
         }
         
@@ -107,7 +115,8 @@ function ConvertTo-Av1Video {
                 if (Test-Path -LiteralPath $TemplatePath -PathType Leaf) {
                     $selectedTemplatePath = $TemplatePath
                     Write-Log "Используется custom template из параметра: $TemplatePath" -Severity Information -Category 'Video'
-                } else {
+                }
+                else {
                     Write-Log "Предупреждение: Указанный template не найден: $TemplatePath" -Severity Warning -Category 'Video'
                 }
             }
@@ -128,11 +137,13 @@ function ConvertTo-Av1Video {
                 # Выбираем шаблон из конфига в зависимости от типа видео и энкодера
                 if ($isHDR) {
                     $selectedTemplatePath = $global:Config.Templates.VapourSynth.HDRtoSDRScript
-                } else {
+                }
+                else {
                     # Для x265 используем специальный шаблон для HD видео
                     if ($isHEVCEncoder) {
                         $selectedTemplatePath = $global:Config.Templates.VapourSynth.MainHDScript
-                    } else {
+                    }
+                    else {
                         $selectedTemplatePath = $global:Config.Templates.VapourSynth.MainScript
                     }
                 }
@@ -150,10 +161,11 @@ function ConvertTo-Av1Video {
             
             # Определяем параметры обрезки
             if (($null -eq $Job.CropParams) -or `
-                    ($null -eq $Job.CropParams.Left -and $null -eq $Job.CropParams.Right -and $null -eq $Job.CropParams.Top -and $null -eq $Job.CropParams.Bottom) ) {
+                ($null -eq $Job.CropParams.Left -and $null -eq $Job.CropParams.Right -and $null -eq $Job.CropParams.Top -and $null -eq $Job.CropParams.Bottom) ) {
                 $Job.CropParams = Get-VideoCropParameters -InputFile $Job.VideoPath
                 Write-Log "Параметры обрезки: $($Job.CropParams | Out-String)" -Severity Verbose -Category 'Video'
-            } else {
+            }
+            else {
                 Write-Log "Параметры обрезки уже заданы: $($Job.CropParams | Out-String)" -Severity Verbose -Category 'Video'
             }
             
@@ -163,11 +175,13 @@ function ConvertTo-Av1Video {
                 $startFrame = [math]::Round($Job.TrimStartSeconds * $Job.FrameRate)
                 $endFrame = if ($Job.TrimDurationSeconds -gt 0) {
                     [math]::Round(($Job.TrimStartSeconds + $Job.TrimDurationSeconds) * $Job.FrameRate)
-                } else { 0 }
+                }
+                else { 0 }
                 
                 if ($endFrame -gt 0) {
                     $trimScript = "clip = core.std.Trim(clip, first=$startFrame, last=$endFrame)`n"
-                } else {
+                }
+                else {
                     $trimScript = "clip = core.std.Trim(clip, first=$startFrame)`n"
                 }
             }
@@ -216,7 +230,8 @@ function ConvertTo-Av1Video {
                     if ($LASTEXITCODE -ne 0) {
                         throw "Ошибка кодирования x265 (код $LASTEXITCODE)"
                     }
-                } else {
+                }
+                else {
                     # Используем vspipe как запасной вариант
                     Write-Log "Используется vspipe для передачи данных в x265" -Severity Information -Category 'Encoding'
                     
@@ -280,7 +295,8 @@ function ConvertTo-Av1Video {
             $encodedVideoInfo = Get-VideoStats -VideoFilePath $Job.VideoOutput
             if ($vpyInfo.Frames -eq $encodedVideoInfo.FrameCount) {
                 Write-Log "Проверка кадров: OK - VPY скрипт ( $($vpyInfo.Frames) кадров ) = закодированное видео ( $($encodedVideoInfo.FrameCount) кадров )" -Severity Success -Category 'Video'
-            } else {
+            }
+            else {
                 Write-Log "ПРЕДУПРЕЖДЕНИЕ: Несоответствие количества кадров! VPY скрипт: $($vpyInfo.Frames), закодированное видео: $($encodedVideoInfo.FrameCount)" -Severity Warning -Category 'Video'
             }
         }
