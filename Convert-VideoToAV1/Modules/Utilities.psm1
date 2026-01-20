@@ -53,9 +53,11 @@ function Get-AudioTrackInfo {
         
         [Console]::OutputEncoding = $originalEncoding
         
+        $id = 0
         $result = $ffprobeOutput.streams | ForEach-Object {
+            $id++
             [PSCustomObject]@{
-                Index     = $_.index
+                Index     = $id #$_.index
                 CodecName = $_.codec_name
                 Channels  = $_.channels
                 Language  = $_.tags.language
@@ -336,18 +338,20 @@ function Write-Log {
 }
 
 function Get-VideoQualityMetrics {
-    <#.SYNOPSIS
+    <#
+.SYNOPSIS
     Вычисляет метрики качества видео VMAF и XPSNR между искаженным и эталонным видео.
 .DESCRIPTION
     Объединяет функциональность VMAF и XPSNR в единый вызов с поддержкой:
+    - AviSynth (.avs) и VapourSynth (.vpy) скриптов
     - Обрезки по времени и области (crop)
     - Многопоточной обработки
     - Разных моделей VMAF
     - Настройки порогов и округления
 .PARAMETER DistortedPath
-    Путь к тестируемому (искаженному) видеофайлу.
+    Путь к тестируемому (искаженному) видеофайлу или скрипту (avs/vpy).
 .PARAMETER ReferencePath
-    Путь к эталонному видеофайлу.
+    Путь к эталонному видеофайлу или скрипту (avs/vpy).
 .PARAMETER Metrics
     Какие метрики рассчитывать ('VMAF', 'XPSNR' или 'Both').
 .PARAMETER Crop
@@ -364,19 +368,26 @@ function Get-VideoQualityMetrics {
     Частота субсэмплинга кадров (1 = все кадры).
 .PARAMETER VMAFLogPath
     Путь для сохранения детального отчета VMAF.
-.PARAMETER XPSNRPoolMethod
-    Метод агрегации XPSNR ('mean' или 'harmonic_mean').
+.PARAMETER VMAFPoolMethod
+    Метод агрегации VMAF ('mean' или 'harmonic_mean').
+.PARAMETER AviSynthPath
+    Путь к AviSynth+ (avs2yuvpipe.exe) для обработки AviSynth скриптов.
+    По умолчанию ищет в стандартных путях.
 .EXAMPLE
-    Get-VideoQualityMetrics -ReferencePath "original.mkv" -DistortedPath "encoded.mp4" -Metrics Both
+    Get-VideoQualityMetrics -ReferencePath "original.vpy" -DistortedPath "encoded.mp4" -Metrics Both
+.EXAMPLE
+    Get-VideoQualityMetrics -ReferencePath "original.avs" -DistortedPath "encoded.mkv" -Metrics VMAF
+.EXAMPLE
+    Get-VideoQualityMetrics -ReferencePath "reference.mkv" -DistortedPath "distorted.vpy" -Metrics XPSNR -VMAFThreads 8
 #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateScript({ Test-Path -LiteralPath $_ })]
+        [ValidateScript({ $(($_ -match '\.(avs|vpy|mp4|mkv)$') -and (Test-Path -LiteralPath $_ -PathType Leaf)) })]
         [string]$DistortedPath,
 
         [Parameter(Mandatory = $true)]
-        [ValidateScript({ Test-Path -LiteralPath $_ })]
+        [ValidateScript({ $(($_ -match '\.(avs|vpy|mp4|mkv)$') -and (Test-Path -LiteralPath $_ -PathType Leaf)) })]
         [string]$ReferencePath,
 
         [ValidateSet('VMAF', 'XPSNR', 'Both')]
@@ -407,26 +418,95 @@ function Get-VideoQualityMetrics {
         [string]$VMAFLogPath,
 
         [ValidateSet('mean', 'harmonic_mean')]
-        [string]$VMAFPoolMethod = 'mean'
+        [string]$VMAFPoolMethod = 'mean',
 
-        # [ValidateRange(0, 255)]
-        # [int]$BlackThreshold = 24,
-
-        # [ValidateSet(2, 4, 8, 16, 32)]
-        # [int]$Round = 4
+        [string]$AviSynthPath = $null
     )
 
-    $videoRefFrameRate  = Get-VideoFrameRate -VideoPath $ReferencePath
-    $videoDistFrameRate = Get-VideoFrameRate -VideoPath $DistortedPath
+    # Функция для определения типа файла
+function Get-FileType {
+    param([string]$Path)
+    $extension = [System.IO.Path]::GetExtension($Path).ToLower()
+    switch ($extension) {
+        '.vpy' { return 'VapourSynth' }
+        '.avs' { return 'AviSynth' }
+        default { return 'Video' }
+    }
+}
+
+    # Функция для получения FPS из скрипта или видео
+    function Get-ScriptFrameRate {
+        param([string]$ScriptPath, [string]$ScriptType)
+        
+        try {
+            if ($ScriptType -eq 'VapourSynth') {
+                $vspipeApp = if ($global:VideoTools.VSPipe) { $global:VideoTools.VSPipe } else { 'vspipe' }
+                $vspipeArgs = @('-i', $ScriptPath, '--info')
+                $vspipeOutput = & $vspipeApp @vspipeArgs 2>&1
+                
+                $fpsLine = $vspipeOutput | Where-Object { $_ -match 'FPS:\s*([\d\/]+(?:\.\d+)?)' }
+                if ($fpsLine) {
+                    $fps = [regex]::Match($fpsLine, 'FPS:\s*([\d\/]+(?:\.\d+)?)').Groups[1].Value
+                    return [double] [Math]::Round((Convert-FpsToDouble -FpsString $fps), 2)
+                }
+            }
+            elseif ($ScriptType -eq 'AviSynth') {
+                # Для AviSynth используем FFmpeg для получения FPS
+                $ffprobeApp = if ($global:VideoTools.FFprobe) { $global:VideoTools.FFprobe } else { 'ffprobe' }
+                $ffprobeArgs = @(
+                    '-v', 'error',
+                    '-f', 'avisynth',
+                    '-i', $ScriptPath,
+                    '-show_entries', 'stream=r_frame_rate',
+                    '-of', 'json'
+                )
+                
+                $ffprobeOutput = & $ffprobeApp @ffprobeArgs
+                $fpsJson = $ffprobeOutput | ConvertFrom-Json
+                if ($fpsJson.streams -and $fpsJson.streams[0].r_frame_rate) {
+                    $fps = $fpsJson.streams[0].r_frame_rate
+                    return [double] [Math]::Round((Convert-FpsToDouble -FpsString $fps), 2)
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Не удалось получить FPS из скрипта ${ScriptPath}: $_"
+        }
+        
+        # Возвращаем значение по умолчанию
+        return 24.0
+    }
+
+    # Определяем типы файлов
+    $distortedType = Get-FileType -Path $DistortedPath
+    $referenceType = Get-FileType -Path $ReferencePath
+    
+    Write-Verbose "Distorted type: $distortedType, Reference type: $referenceType"
+
+    # Получаем FPS для каждого файла
+    $videoRefFrameRate = if ($referenceType -eq 'Video') {
+        Get-VideoFrameRate -VideoPath $ReferencePath
+    } else {
+        Get-ScriptFrameRate -ScriptPath $ReferencePath -ScriptType $referenceType
+    }
+
+    $videoDistFrameRate = if ($distortedType -eq 'Video') {
+        Get-VideoFrameRate -VideoPath $DistortedPath
+    } else {
+        Get-ScriptFrameRate -ScriptPath $DistortedPath -ScriptType $distortedType
+    }
 
     # Базовые фильтры для временных меток
-    $baseFilters = "settb=AVTB,setpts=PTS-STARTPTS" #,format=yuv420"
+    $baseFilters = "settb=AVTB,setpts=PTS-STARTPTS"
 
     # Собираем фильтры обрезки
     $cropFilterReference = if ($Crop.Left -or $Crop.Right -or $Crop.Top -or $Crop.Bottom) {
         "crop=w=iw-$($Crop.Left)-$($Crop.Right):h=ih-$($Crop.Top)-$($Crop.Bottom):x=$($Crop.Left):y=$($Crop.Top)"
     }
-    if ($Crop.CropDistVideo) { $cropFilterDistortion = $cropFilterReference }
+    
+    if ($Crop.CropDistVideo) { 
+        $cropFilterDistortion = $cropFilterReference 
+    }
 
     # Фильтры обрезки по времени
     $trimFilter = if ($TrimStartSeconds -gt 0 -or $DurationSeconds -gt 0) {
@@ -442,6 +522,29 @@ function Get-VideoQualityMetrics {
         XPSNR = $null
     }
 
+    # Функция для формирования входных параметров в зависимости от типа файла
+    function Get-InputArgs {
+        param([string]$Path, [string]$FileType, [double]$FrameRate)
+        
+        $argsList = @()
+        
+        switch ($FileType) {
+            'VapourSynth' {
+                $argsList += '-f', 'vapoursynth'
+                $argsList += '-r', ($FrameRate.ToString().Replace(',', '.'))
+            }
+            'AviSynth' {
+                $argsList += '-f', 'avisynth'
+            }
+            default {
+                # Для видеофайлов ничего не добавляем
+            }
+        }
+        
+        $argsList += '-i', $Path
+        return $argsList
+    }
+
     # Общий фильтр для обоих потоков
     $filterChain = @(
         "[0:v]$(if($cropFilterDistortion) { "${cropFilterDistortion}," })$commonFilters[dist];",
@@ -454,7 +557,7 @@ function Get-VideoQualityMetrics {
             "eof_action=endall",
             "n_threads=$VMAFThreads",
             "n_subsample=$Subsample",
-            "model=version=$ModelVersion"
+            "model=version=$ModelVersion",
             "pool=$VMAFPoolMethod"
         )
         
@@ -465,14 +568,19 @@ function Get-VideoQualityMetrics {
 
         $vmafFilter = "[dist][ref]libvmaf=$($vmafParams -join ':')"
         
+        # Формируем аргументы FFmpeg
         $ffmpegArgs = @(
             "-hide_banner", "-y", "-nostats"
-            if ([IO.Path]::GetExtension($DistortedPath) -eq '.vpy') { @("-f", "vapoursynth") }
-            "-r", ($videoDistFrameRate.ToString().Replace(',', '.'))
-            "-i", $DistortedPath
-            if ([IO.Path]::GetExtension($ReferencePath) -eq '.vpy') { @("-f", "vapoursynth") }
-            "-r", ($videoRefFrameRate.ToString().Replace(',', '.'))
-            "-i", $ReferencePath,
+        )
+        
+        # Добавляем параметры для искаженного видео
+        $ffmpegArgs += Get-InputArgs -Path $DistortedPath -FileType $distortedType -FrameRate $videoDistFrameRate
+        
+        # Добавляем параметры для эталонного видео
+        $ffmpegArgs += Get-InputArgs -Path $ReferencePath -FileType $referenceType -FrameRate $videoRefFrameRate
+        
+        # Добавляем фильтры и выход
+        $ffmpegArgs += @(
             "-filter_complex", "${filterChain}${vmafFilter}",
             "-f", "null", "-"
         )
@@ -484,9 +592,18 @@ function Get-VideoQualityMetrics {
 
         if ($output -join '`n' -match [regex]'(?m).*VMAF score: (?<vmaf>\d+\.+\d+).*') {
             $results.VMAF = [double]$Matches.vmaf
+            Write-Verbose "VMAF calculation successful: $($results.VMAF)"
         }
         else {
-            Write-Warning "VMAF calculation failed: $($output -join "`n")"
+            Write-Warning "VMAF calculation failed. Output: $($output -join "`n")"
+            # Попробуем найти VMAF в другом формате вывода
+            if ($output -join '`n' -match [regex]'VMAF score:\s*(\d+\.\d+)') {
+                $results.VMAF = [double]$Matches[1]
+                Write-Verbose "VMAF found (alternative pattern): $($results.VMAF)"
+            }
+            else {
+                $results.VMAF = $null
+            }
         }
     }
 
@@ -494,12 +611,19 @@ function Get-VideoQualityMetrics {
     if ($Metrics -in ('Both', 'XPSNR')) {
         $xpsnrFilter = "[dist][ref]xpsnr=eof_action=endall"
         
+        # Формируем аргументы FFmpeg
         $ffmpegArgs = @(
             "-hide_banner", "-y", "-nostats"
-            if ([IO.Path]::GetExtension($DistortedPath) -eq '.vpy') { @("-f", "vapoursynth") }
-            "-i", $DistortedPath
-            if ([IO.Path]::GetExtension($ReferencePath) -eq '.vpy') { @("-f", "vapoursynth") }
-            "-i", $ReferencePath,
+        )
+        
+        # Добавляем параметры для искаженного видео
+        $ffmpegArgs += Get-InputArgs -Path $DistortedPath -FileType $distortedType -FrameRate $videoDistFrameRate
+        
+        # Добавляем параметры для эталонного видео
+        $ffmpegArgs += Get-InputArgs -Path $ReferencePath -FileType $referenceType -FrameRate $videoRefFrameRate
+        
+        # Добавляем фильтры и выход
+        $ffmpegArgs += @(
             "-filter_complex", "${filterChain}${xpsnrFilter}",
             "-f", "null", "-"
         )
@@ -509,7 +633,11 @@ function Get-VideoQualityMetrics {
         $output = & ffmpeg $ffmpegArgs 2>&1
         $timerXPSNR.Stop()
 
-        if ($output -join '`n' -match [regex]'(?m)XPSNR.*y: (?<y>\d+\.\d+).*u: (?<u>\d+\.\d+).*v: (?<v>\d+\.\d+)') {
+        # Ищем XPSNR в разных форматах вывода
+        $xpsnrFound = $false
+        
+        # Формат 1: "XPSNR... y: XX.XX u: XX.XX v: XX.XX"
+        if ($output -join '`n' -match [regex]'(?m)XPSNR.*y:\s*(?<y>\d+\.\d+).*u:\s*(?<u>\d+\.\d+).*v:\s*(?<v>\d+\.\d+)') {
             $results.XPSNR = @{
                 Y    = [double]$Matches['y']
                 U    = [double]$Matches['u']
@@ -518,22 +646,43 @@ function Get-VideoQualityMetrics {
                 AVG  = ([double]$Matches['y'] + [double]$Matches['u'] + [double]$Matches['v']) / 3
                 WSUM = (4 * [double]$Matches['y'] + [double]$Matches['u'] + [double]$Matches['v']) / 6
             }
+            $xpsnrFound = $true
+            Write-Verbose "XPSNR calculation successful (pattern 1)"
         }
-        else {
-            Write-Warning "XPSNR calculation failed: $($output -join "`n")"
+        # Формат 2: "PSNR y:XX.XX u:XX.XX v:XX.XX *"
+        elseif ($output -join '`n' -match [regex]'(?m)PSNR.*y:\s*(?<y>\d+\.\d+).*u:\s*(?<u>\d+\.\d+).*v:\s*(?<v>\d+\.\d+)') {
+            $results.XPSNR = @{
+                Y    = [double]$Matches['y']
+                U    = [double]$Matches['u']
+                V    = [double]$Matches['v']
+                MIN  = (([double]$Matches['y'], [double]$Matches['u'], [double]$Matches['v']) | Measure-Object -Minimum).Minimum
+                AVG  = ([double]$Matches['y'] + [double]$Matches['u'] + [double]$Matches['v']) / 3
+                WSUM = (4 * [double]$Matches['y'] + [double]$Matches['u'] + [double]$Matches['v']) / 6
+            }
+            $xpsnrFound = $true
+            Write-Verbose "XPSNR calculation successful (pattern 2)"
+        }
+        
+        if (-not $xpsnrFound) {
+            Write-Warning "XPSNR calculation failed. Output: $($output -join "`n")"
+            $results.XPSNR = $null
         }
     }
 
     # Добавляем информацию о параметрах
     $results['Parameters'] = @{
-        Crop         = $Crop
-        TimeRange    = if ($DurationSeconds -gt 0) {
+        DistortedType  = $distortedType
+        ReferenceType  = $referenceType
+        DistortedFPS   = $videoDistFrameRate
+        ReferenceFPS   = $videoRefFrameRate
+        Crop           = $Crop
+        TimeRange      = if ($DurationSeconds -gt 0) {
             "$TrimStartSeconds-$($TrimStartSeconds+$DurationSeconds)s"
         }
         else { "Full duration" }
-        ModelVersion = $ModelVersion
-        VMAFTimer    = $timerVMAF
-        XPSNRTimer   = $timerXPSNR
+        ModelVersion   = $ModelVersion
+        VMAFTimer      = $timerVMAF
+        XPSNRTimer     = $timerXPSNR
     }
 
     return [PSCustomObject]$results
@@ -652,6 +801,139 @@ function Get-EncoderConfig {
         throw
     }
 }
+
+function Get-VideoFrameRate {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$VideoPath)
+    
+    try {
+        $fps = $null
+        
+        # Проверяем расширение файла
+        $extension = [System.IO.Path]::GetExtension($VideoPath).ToLower()
+        
+        switch ($extension) {
+            '.vpy' {
+                # Обработка VapourSynth скриптов
+                $vspipeApp = if ($global:VideoTools.VSPipe) { $global:VideoTools.VSPipe } else { 'vspipe' }
+                $vspipeArgs = @('-i', $VideoPath, '--info')
+                $vspipeOutput = & $vspipeApp @vspipeArgs 2>&1
+                
+                $fpsLine = $vspipeOutput | Where-Object { $_ -match 'FPS:\s*([\d\/]+(?:\.\d+)?)' }
+                if ($fpsLine) {
+                    $fps = [regex]::Match($fpsLine, 'FPS:\s*([\d\/]+(?:\.\d+)?)').Groups[1].Value
+                } else {
+                    throw "Не удалось найти информацию о FPS в выводе vspipe"
+                }
+            }
+            '.avs' {
+                # Обработка AviSynth скриптов через ffprobe
+                $ffprobeApp = if ($global:VideoTools.FFprobe) { $global:VideoTools.FFprobe } else { 'ffprobe' }
+                $ffprobeArgs = @(
+                    '-v', 'error',
+                    '-f', 'avisynth',
+                    '-select_streams', 'v:0',
+                    '-show_entries', 'stream=r_frame_rate',
+                    '-of', 'json',
+                    $VideoPath
+                )
+                
+                $ffprobeOutput = & $ffprobeApp @ffprobeArgs
+                $fpsJson = $ffprobeOutput | ConvertFrom-Json
+                if ($fpsJson.streams -and $fpsJson.streams[0].r_frame_rate) {
+                    $fps = $fpsJson.streams[0].r_frame_rate
+                } else {
+                    throw "Не удалось получить FPS из AviSynth скрипта"
+                }
+            }
+            default {
+                # Обработка обычных видеофайлов через ffprobe
+                $ffprobeApp = if ($global:VideoTools.FFprobe) { $global:VideoTools.FFprobe } else { 'ffprobe' }
+                $ffprobeArgs = @(
+                    '-v', 'error',
+                    '-select_streams', 'v:0',
+                    '-show_entries', 'stream=r_frame_rate',
+                    '-of', 'json',
+                    $VideoPath
+                )
+                
+                $ffprobeOutput = & $ffprobeApp @ffprobeArgs
+                $fpsJson = $ffprobeOutput | ConvertFrom-Json
+                $fps = $fpsJson.streams[0].r_frame_rate
+            }
+        }
+        
+        # Общая логика обработки FPS
+        if ($null -ne $fps) {
+            return [double] [Math]::Round((Convert-FpsToDouble -Fps $fps), 2)
+        } else {
+            throw "Не удалось получить значение FPS"
+        }
+    }
+    catch {
+        Write-Log "Ошибка получения framerate: $_" -Severity Error -Category 'UtilModule'
+        throw
+    }
+}
+
+<# function Test-AviSynthSupport {
+    [CmdletBinding()]
+    param()
+    
+    try {
+        # Проверяем, поддерживает ли FFmpeg AviSynth
+        $ffmpegOutput = & ffmpeg -formats 2>&1
+        if ($ffmpegOutput -match "avisynth") {
+            Write-Verbose "FFmpeg поддерживает AviSynth"
+            return $true
+        }
+        
+        # Проверяем наличие avs2yuvpipe как альтернативы
+        if (Get-Command avs2yuvpipe.exe -ErrorAction SilentlyContinue) {
+            Write-Verbose "Найден avs2yuvpipe.exe для работы с AviSynth"
+            return $true
+        }
+        
+        Write-Warning "FFmpeg не поддерживает AviSynth и avs2yuvpipe не найден"
+        return $false
+    }
+    catch {
+        Write-Verbose "Ошибка проверки поддержки AviSynth: $_"
+        return $false
+    }
+}
+#>
+
+<# function Get-AviSynthInfo {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ScriptPath)
+    
+    try {
+        if (-not (Test-AviSynthSupport)) {
+            throw "AviSynth не поддерживается в системе"
+        }
+        
+        # Используем FFmpeg для получения информации о AviSynth скрипте
+        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -f avisynth `
+            -show_entries stream=width,height,r_frame_rate,codec_name `
+            -of json $ScriptPath | ConvertFrom-Json
+        
+        if ($ffprobeOutput.streams) {
+            return [PSCustomObject]@{
+                Width     = $ffprobeOutput.streams[0].width
+                Height    = $ffprobeOutput.streams[0].height
+                FrameRate = $ffprobeOutput.streams[0].r_frame_rate
+                Codec     = $ffprobeOutput.streams[0].codec_name
+            }
+        }
+    }
+    catch {
+        Write-Verbose "Ошибка получения информации о AviSynth скрипте: $_"
+        return $null
+    }
+}
+#>
+
 
 function Test-VideoHDR {
     [CmdletBinding()]
@@ -1529,10 +1811,117 @@ function Get-RecommendedEncoderSettings {
     return $recommendations
 }
 
+# Онлайн-перевод
+function Invoke-MyMemoryTranslate {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Text,
+        [string]$SourceLang = "ru",
+        [string]$TargetLang = "en"
+    )
+
+    $url = "https://api.mymemory.translated.net/get?q=$([System.Web.HttpUtility]::UrlEncode($Text))&langpair=$SourceLang|$TargetLang"
+    
+    try {
+        $response = Invoke-RestMethod -Uri $url -Method Get
+        return $response.responseData.translatedText
+    }
+    catch {
+        Write-Error "Ошибка перевода: $_"
+        return $null
+    }
+}
+
+function Invoke-LibreTranslate {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Text,
+        [string]$SourceLang = "ru",
+        [string]$TargetLang = "en"
+    )
+
+    # Русские публичные серверы
+    $servers = @(
+        "https://translate.terraprint.co",
+        "https://libretranslate.opensourcestack.com"
+    )
+
+    $body = @{
+        q      = $Text
+        source = $SourceLang
+        target = $TargetLang
+    } | ConvertTo-Json
+
+    foreach ($server in $servers) {
+        try {
+            $url = "$server/translate"
+            $response = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json"
+            if ($response.translatedText) {
+                return $response.translatedText
+            }
+        }
+        catch {
+            Write-Warning "Сервер $server недоступен"
+            continue
+        }
+    }
+    
+    Write-Error "Все серверы недоступны"
+    return $null
+}
+
+function Invoke-GoogleTranslate {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Text,
+        [string]$SourceLang = "auto",
+        [string]$TargetLang = "en"
+    )
+
+    # Используем альтернативный endpoint
+    $url = "https://translate.googleapis.com/translate_a/single?client=dict-chrome-ex&sl=$SourceLang&tl=$TargetLang&dt=t&q=$([System.Web.HttpUtility]::UrlEncode($Text))"
+    
+    try {
+        $response = Invoke-RestMethod -Uri $url -Method Get -Headers @{
+            "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        return ($response[0] | ForEach-Object { $_[0] }) -join ""
+    }
+    catch {
+        Write-Error "Ошибка перевода Google: $_"
+        return $null
+    }
+}
+
+function Invoke-FreeTranslate {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Text,
+        [string]$SourceLang = "ru",
+        [string]$TargetLang = "en"
+    )
+
+    Write-Host "Пробуем MyMemory..." -ForegroundColor Yellow
+    $result = Invoke-MyMemoryTranslate -Text $Text -SourceLang $SourceLang -TargetLang $TargetLang
+    if ($result) { return $result }
+
+    Write-Host "Пробуем LibreTranslate..." -ForegroundColor Yellow
+    $result = Invoke-LibreTranslate -Text $Text -SourceLang $SourceLang -TargetLang $TargetLang
+    if ($result) { return $result }
+
+    Write-Host "Пробуем Google Translate..." -ForegroundColor Yellow
+    $result = Invoke-GoogleTranslate -Text $Text -SourceLang $SourceLang -TargetLang $TargetLang
+    if ($result) { return $result }
+
+    Write-Error "Все переводчики недоступны"
+    return $null
+}
+
+
 # 
 Export-ModuleMember -Function Initialize-Configuration, Get-AudioTrackInfo, `
     Remove-TemporaryFiles, Get-VideoScriptInfo, Get-VideoCropParameters, `
     Write-Log, Get-VideoQualityMetrics, Get-VideoFrameRate, ConvertTo-Seconds, `
     Get-SafeFileName, Get-EncoderPath, Get-EncoderParams, Get-EncoderConfig, `
     Copy-VideoFragments, Get-VideoStats, Get-VideoAutoCropParams, Get-VideoColorMappings, `
-    Convert-FpsToDouble, Get-MP4AudioTrackInfo, Test-VideoHDR
+    Convert-FpsToDouble, Get-MP4AudioTrackInfo, Test-VideoHDR, Invoke-FreeTranslate

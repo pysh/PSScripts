@@ -1,34 +1,34 @@
 @{
     # Пути к инструментам
-    Tools = @{
-        FFmpeg     = "ffmpeg.exe"
-        FFprobe    = "ffprobe.exe"
-        MkvMerge   = "mkvmerge.exe"
-        MkvExtract = "mkvextract.exe"
-        MkvPropedit= "mkvpropedit.exe"
-        VSPipe     = "vspipe.exe"
-        x265       = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\x265\x265.exe'
-        SvtAv1Enc       = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp\SvtAv1EncApp.exe'
-        SvtAv1EncESS    = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-Essential\SvtAv1EncApp.exe'
-        SvtAv1EncHDR    = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-HDR\SvtAv1EncApp.exe'
-        SvtAv1EncPSYEX  = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-PSYEX\SvtAv1EncApp.exe'
-        Rav1eEnc        = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\rav1e\rav1e.exe'
-        AomAv1Enc       = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\AOMEnc\aomenc.exe'
-        OpusEnc         = 'd:\Sources\media-autobuild_suite\local64\bin-audio\opusenc.exe'
-        AutoCrop        = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe'
+    Tools      = @{
+        FFmpeg         = "ffmpeg.exe"
+        FFprobe        = "ffprobe.exe"
+        MkvMerge       = "mkvmerge.exe"
+        MkvExtract     = "mkvextract.exe"
+        MkvPropedit    = "mkvpropedit.exe"
+        VSPipe         = "C:\Program Files\VapourSynth\core\vspipe.exe"
+        x265           = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\x265\x265.exe'
+        SvtAv1Enc      = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp\SvtAv1EncApp.exe'
+        SvtAv1EncESS   = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-Essential\SvtAv1EncApp.exe'
+        SvtAv1EncHDR   = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-HDR\SvtAv1EncApp.exe'
+        SvtAv1EncPSYEX = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\SvtAv1EncApp-PSYEX\SvtAv1EncApp.exe'
+        Rav1eEnc       = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\rav1e\rav1e.exe'
+        AomAv1Enc      = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Encoders\AOMEnc\aomenc.exe'
+        OpusEnc        = 'd:\Sources\media-autobuild_suite\local64\bin-audio\opusenc.exe'
+        AutoCrop       = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe'
     }
 
     # Параметры обработки
     Processing = @{
-        DefaultThreads = 10
+        DefaultThreads     = 10
         keepTempAudioFiles = $false
-        DeleteTempFiles = $false
-        AutoCropThreshold = 1000
-        TempDir = "r:\Temp\"
-        VSPipeMethod = "vspipe"  # Возможные значения: "vspipe", "ffmpeg"
+        DeleteTempFiles    = $true
+        AutoCropThreshold  = 1000
+        TempDir            = "r:\Temp\"
+        VSPipeMethod       = "vspipe"  # Возможные значения: "vspipe", "ffmpeg"
     }
     
-    Encoding = @{
+    Encoding   = @{
         # Доступные энкодеры
         AvailableEncoders = @{
             x265           = 'Tools.x265'
@@ -41,20 +41,30 @@
         }
         
         # Энкодер по умолчанию
-        DefaultEncoder = 'SvtAv1EncESS'
+        DefaultEncoder    = 'SvtAv1EncESS'
+
+        Audio             = @{
+            CopyAudio = $false
+            Bitrates  = @{
+                Stereo   = "192k"
+                Surround = "384k"
+                Multi    = "480k"
+            }
+        }
         
-        Video = @{
-            CopyVideo = $false
-            CropRound = 2
-            XtraParams = @()
+        Video             = @{
+            CopyVideo     = $false
+            CropRound     = 2
+            XtraParams    = @()
             
             # Параметры по энкодерам
             EncoderParams = @{
-                x265 = @{
-                    Quality = 23
-                    Preset = 'slower'
+                x265               = @{
+                    Quality  = 23
+                    Preset   = 'slower'
                     BaseArgs = @(
                         '--output-depth', '10',
+                        '--tune', 'grain',
                         '--no-strong-intra-smoothing',
                         '--rc-lookahead', '60',
                         '--aq-strength', '0.85',
@@ -73,7 +83,7 @@
                         '--colormatrix', 'bt709'
                     )
                     # DeepSeek параметры
-<#                     $BaseArgs = @(
+                    <#                     $BaseArgs = @(
                         '--tune', 'grain',              # КРИТИЧЕСКИ важно для пленки!
                         '--output-depth', '10',
 
@@ -143,57 +153,64 @@
                         '--rdpenalty', '2'              # Penalty для skip modes
                     ) #>
                 }
-                SvtAv1Enc = @{
-                    Quality = 25
-                    Preset = 3
+                SvtAv1Enc          = @{
+                    Quality  = 25
+                    Preset   = 3
                     BaseArgs = @('--rc', '0')
                 }
-                SvtAv1EncESS = @{
-                    Speed    = 'slow'
-                    Quality  = 'low'
+                SvtAv1EncESS       = @{
+                    Quality  = 'medium'     # 'higher', 'high', 'medium', 'low',  'lower'
+                    Speed    = 'slow'   # 'slower', 'slow', 'medium', 'fast', 'faster'
                     BaseArgs = @(
                         '--rc', '0',
                         '--progress', '3',
                         '--auto-tiling', '0',
+                        #'--aq-mode', 2, '--scm', 0, '--film-grain-denoise', 0, '--film-grain', 12, '--enable-overlays', 1,
                         '--color-primaries', '1',
                         '--transfer-characteristics', '1',
                         '--matrix-coefficients', '1'
                     )
                 }
-                SvtAv1EncHDR = @{
-                    Quality = 25
-                    Preset = 3
+                SvtAv1EncESS_grain = @{
+                    Quality  = 'medium'     # 'higher', 'high', 'medium', 'low',  'lower'
+                    Speed    = 'slow'   # 'slower', 'slow', 'medium', 'fast', 'faster'
+                    BaseArgs = @(
+                        '--rc', '0',
+                        '--progress', '3',
+                        '--auto-tiling', '0',
+                        '--aq-mode', 2, '--scm', 0, '--film-grain-denoise', 0, '--film-grain', 12, '--enable-overlays', 1,
+                        '--color-primaries', '1',
+                        '--transfer-characteristics', '1',
+                        '--matrix-coefficients', '1'
+                    )
+                }
+
+                SvtAv1EncHDR       = @{
+                    Quality  = 25
+                    Preset   = 3
                     BaseArgs = @('--rc', '0')
                 }
-                SvtAv1EncPSYEX = @{
-                    Quality = 25
-                    Preset = 3
+                SvtAv1EncPSYEX     = @{
+                    Quality  = 25
+                    Preset   = 3
                     BaseArgs = @('--rc', '0')
                 }
-                Rav1eEnc = @{
-                    Quality = 80
-                    Speed = 4
+                Rav1eEnc           = @{
+                    Quality  = 80
+                    Speed    = 4
                     BaseArgs = @()
                 }
-                AomAv1Enc = @{
-                    Quality = 30
-                    CpuUsed = 6
+                AomAv1Enc          = @{
+                    Quality  = 30
+                    CpuUsed  = 6
                     BaseArgs = @('--end-usage=q')
                 }
-            }
-        }
-        Audio = @{
-            CopyAudio = $true
-            Bitrates = @{
-                Stereo   = "200k"
-                Surround = "384k"
-                Multi    = "480k"
             }
         }
     }
 
     # Пути к шаблонам VapourSynth
-    Templates = @{
+    Templates  = @{
         VapourSynth = @{
             AutoCrop       = "Templates\AutoCropTemplate.py"
             MainScript     = "Templates\VapourSynth\MainScript.vpy"

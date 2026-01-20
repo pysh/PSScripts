@@ -42,7 +42,6 @@ function ConvertTo-OpusAudio {
 
         # Параллельная обработка
         $audioTracks | ForEach-Object -Parallel {
-
             function Get-SafeFileName {
                 param([string]$FileName)
                 if ([string]::IsNullOrWhiteSpace($FileName)) { return [string]::Empty }
@@ -111,56 +110,83 @@ function ConvertTo-OpusAudio {
                         throw "Ошибка копирования аудио (код $LASTEXITCODE)"
                     }
                     
-                    Write-Host "Аудио скопировано без перекодировки: $($track.CodecName)" -Severity Verbose -Category 'Audio'
+                    Write-Verbose "Аудио скопировано без перекодировки: $($track.CodecName)"
                 } else {
-                    # Перекодирование в Opus
-                    $tempAudio = [IO.Path]::ChangeExtension($audioOutput, "tmp.flac")
-                    
-                    try {
-                        # Извлечение с обрезкой
+                    # ОПТИМИЗАЦИЯ: Если исходный кодек уже Opus, просто извлекаем
+                    if ($track.CodecName -eq 'opus') {
+                        Write-Verbose "Исходная дорожка уже в формате Opus, простое извлечение"
+                        
                         $ffmpegArgs = @(
                             "-y", "-hide_banner", "-loglevel", "error",
                             "-i", $job.VideoPath
                             $trimParams
                             "-map", "0:a:$($track.Index-1)",
-                            "-c:a", "flac",
-                            $tempAudio
+                            "-c:a", "copy",  # Копируем Opus без перекодировки
+                            $audioOutput
                         )
                         
                         & $tools.FFmpeg $ffmpegArgs
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Ошибка извлечения аудио (код $LASTEXITCODE)"
-                        }
-
-                        # Конвертация в Opus
-                        $bitRate = if ($track.Channels -le 2) {
-                            $bitrates.Stereo
-                        }
-                        elseif ($track.Channels -le 6) {
-                            $bitrates.Surround
-                        }
-                        else {
-                            $bitrates.Multi
+                            throw "Ошибка извлечения Opus (код $LASTEXITCODE)"
                         }
                         
-                        $opusArgs = @(
-                            "--quiet", "--vbr", "--bitrate", $bitRate
-                            $(if ($track.Title) { "--title", "$($track.Title)" })
-                            $(if ($track.Language) { "--comment", "language=$($track.Language)" })
-                            $tempAudio, $audioOutput
-                        )
-                        
-                        & $tools.OpusEnc @opusArgs
-                        if ($LASTEXITCODE -ne 0) {
-                            throw "Ошибка кодирования Opus (код $LASTEXITCODE)"
-                        }
+                        Write-Verbose "Opus дорожка успешно извлечена без перекодировки"
                     }
-                    finally {
-                        if (-not $keepTempAudioFiles -and (Test-Path -LiteralPath $tempAudio)) {
-                            Remove-Item -LiteralPath $tempAudio -Force
+                    # Для других кодеков делаем полное перекодирование
+                    else {
+                        $tempAudio = [IO.Path]::ChangeExtension($audioOutput, "tmp.flac")
+                        
+                        try {
+                            # Извлечение с обрезкой
+                            $ffmpegArgs = @(
+                                "-y", "-hide_banner", "-loglevel", "error",
+                                "-i", $job.VideoPath
+                                $trimParams
+                                "-map", "0:a:$($track.Index-1)",
+                                "-c:a", "flac",
+                                $tempAudio
+                            )
+                            
+                            & $tools.FFmpeg $ffmpegArgs
+                            if ($LASTEXITCODE -ne 0) {
+                                throw "Ошибка извлечения аудио (код $LASTEXITCODE)"
+                            }
+
+                            # Конвертация в Opus
+                            $bitRate = if ($track.Channels -le 2) {
+                                $bitrates.Stereo
+                            }
+                            elseif ($track.Channels -le 6) {
+                                $bitrates.Surround
+                            }
+                            else {
+                                $bitrates.Multi
+                            }
+                            
+                            $opusArgs = @(
+                                "--quiet", "--vbr", "--bitrate", $bitRate
+                                $(if ($track.Title) { "--title", "$($track.Title)" })
+                                $(if ($track.Language) { "--comment", "language=$($track.Language)" })
+                                $tempAudio, $audioOutput
+                            )
+                            
+                            & $tools.OpusEnc @opusArgs
+                            if ($LASTEXITCODE -ne 0) {
+                                throw "Ошибка кодирования Opus (код $LASTEXITCODE)"
+                            }
+                            
+                            Write-Verbose "Аудио перекодировано в Opus: $($track.CodecName) -> Opus"
+                        }
+                        finally {
+                            if (-not $keepTempAudioFiles -and (Test-Path -LiteralPath $tempAudio)) {
+                                Remove-Item -LiteralPath $tempAudio -Force
+                            }
                         }
                     }
                 }
+            }
+            else {
+                Write-Verbose "Аудиофайл уже существует: $([IO.Path]::GetFileName($audioOutput))"
             }
 
             # Возвращаем объект
@@ -172,15 +198,38 @@ function ConvertTo-OpusAudio {
                 Default  = $track.Default
                 Forced   = $track.Forced
                 Channels = $track.Channels
-                Codec    = if ($copyAudio) { $track.CodecName } else { "opus" }
+                Codec    = if ($copyAudio) { 
+                    $track.CodecName 
+                } else { 
+                    # Для Opus дорожек определяем, был ли это прямой копи или перекодирование
+                    if ($track.CodecName -eq 'opus') { 'opus (extracted)' } else { 'opus (converted)' }
+                }
+                OriginalCodec = $track.CodecName
             }
         } -ThrottleLimit $ParallelThreads | Sort-Object { $_.Index } | ForEach-Object {
             $Job.AudioOutputs.Add($_)
             $Job.TempFiles.Add($_.Path)
         }
 
-        $action = if ($copyAudio) { "скопировано" } else { "перекодировано" }
-        Write-Log "Успешно $action $($Job.AudioOutputs.Count) аудиодорожек" -Severity Success -Category 'Audio'
+        # Анализируем статистику обработки
+        $totalTracks = $Job.AudioOutputs.Count
+        $opusExtracted = ($Job.AudioOutputs | Where-Object { $_.Codec -eq 'opus (extracted)' }).Count
+        $opusConverted = ($Job.AudioOutputs | Where-Object { $_.Codec -eq 'opus (converted)' }).Count
+        $copiedTracks = ($Job.AudioOutputs | Where-Object { $_.Codec -ne 'opus (extracted)' -and $_.Codec -ne 'opus (converted)' }).Count
+        
+        if ($copyAudio) {
+            $action = "скопировано"
+            Write-Log "Успешно скопировано $copiedTracks аудиодорожек (без перекодировки)" -Severity Success -Category 'Audio'
+        } else {
+            if ($opusExtracted -gt 0) {
+                Write-Log "Извлечено $opusExtracted Opus дорожек (без перекодировки)" -Severity Information -Category 'Audio'
+            }
+            if ($opusConverted -gt 0) {
+                Write-Log "Перекодировано $opusConverted дорожек в Opus" -Severity Information -Category 'Audio'
+            }
+            Write-Log "Всего обработано $totalTracks аудиодорожек" -Severity Success -Category 'Audio'
+        }
+        
         return $Job
     }
     catch {
@@ -189,4 +238,74 @@ function ConvertTo-OpusAudio {
     }
 }
 
-Export-ModuleMember -Function ConvertTo-OpusAudio
+function Get-AudioProcessingRecommendation {
+    <#
+    .SYNOPSIS
+        Анализирует аудиодорожки и рекомендует оптимальную стратегию обработки
+    .EXAMPLE
+        Get-AudioProcessingRecommendation -VideoPath "video.mkv"
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VideoPath,
+        
+        [bool]$CopyAudioMode = $false
+    )
+    
+    try {
+        $fileExtension = [System.IO.Path]::GetExtension($VideoPath).ToLower()
+        $isMP4 = $fileExtension -eq '.mp4'
+        
+        $audioTracks = if ($isMP4) {
+            Get-MP4AudioTrackInfo -VideoFilePath $VideoPath
+        } else {
+            Get-AudioTrackInfo -VideoFilePath $VideoPath
+        }
+        
+        $opusCount = ($audioTracks | Where-Object { $_.CodecName -eq 'opus' }).Count
+        $totalCount = $audioTracks.Count
+        
+        $recommendation = @{
+            TotalTracks = $totalCount
+            OpusTracks = $opusCount
+            OtherTracks = $totalCount - $opusCount
+            RecommendedAction = if ($CopyAudioMode) { "copy_all" } else { "optimized" }
+            Benefits = @()
+        }
+        
+        if ($CopyAudioMode) {
+            $recommendation.Benefits += "Копирование всех дорожек без потерь"
+            $recommendation.Benefits += "Максимальное качество звука"
+        } elseif ($opusCount -eq $totalCount) {
+            $recommendation.RecommendedAction = "extract_all"
+            $recommendation.Benefits += "Все дорожки уже в Opus - простое извлечение"
+            $recommendation.Benefits += "Нет потерь качества"
+            $recommendation.Benefits += "Быстрее в 5-10 раз"
+        } elseif ($opusCount -gt 0) {
+            $recommendation.RecommendedAction = "mixed"
+            $recommendation.Benefits += "$opusCount Opus дорожек будут извлечены без перекодировки"
+            $recommendation.Benefits += "$($totalCount - $opusCount) дорожек будут перекодированы в Opus"
+            $recommendation.Benefits += "Частичная оптимизация скорости"
+        } else {
+            $recommendation.RecommendedAction = "convert_all"
+            $recommendation.Benefits += "Все дорожки будут перекодированы в Opus"
+            $recommendation.Benefits += "Оптимальное сжатие"
+        }
+        
+        # Расчет примерного времени экономии
+        if ($opusCount -gt 0 -and -not $CopyAudioMode) {
+            # Предполагаем, что извлечение Opus в 10 раз быстрее чем перекодирование
+            $timeSaved = [math]::Round($opusCount * 0.9, 2) # 90% времени на каждую Opus дорожку
+            $recommendation.EstimatedTimeSavings = "${timeSaved}x быстрее для Opus дорожек"
+        }
+        
+        return [PSCustomObject]$recommendation
+    }
+    catch {
+        Write-Verbose "Ошибка анализа аудио: $_"
+        return $null
+    }
+}
+
+Export-ModuleMember -Function ConvertTo-OpusAudio, Get-AudioProcessingRecommendation

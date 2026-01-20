@@ -6,6 +6,166 @@
 using namespace System.Xml
 using namespace System.Text
 
+function Copy-TagsFromSource {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Job)
+    
+    try {
+        Write-Log "NFO файл отсутствует, копирую теги из исходного файла" -Severity Information -Category 'Metadata'
+        
+        # Создаем временный файл для тегов
+        $tagsFile = Join-Path -Path $Job.Metadata.TempDir -ChildPath "$($Job.BaseName)_source_tags.xml"
+        
+        # Извлекаем теги из исходного файла с помощью mkvpropedit
+        $sourceTagsFile = Join-Path -Path $Job.Metadata.TempDir -ChildPath "$($Job.BaseName)_source_tags.txt"
+        
+        # Используем mkvpropedit для получения тегов в формате XML
+        $mkvpropeditArgs = @(
+            '--export-tags', 'xml:' + $sourceTagsFile,
+            $Job.VideoPath
+        )
+        
+        Write-Log "Извлечение тегов из исходного файла: $($Job.VideoPath)" -Severity Debug -Category 'Metadata'
+        & $global:VideoTools.MkvPropedit @mkvpropeditArgs 2>&1 | Out-Null
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log "Не удалось извлечь теги через mkvpropedit, пробую через mkvmerge" -Severity Warning -Category 'Metadata'
+            
+            # Альтернативный способ через mkvmerge
+            $mkvmergeArgs = @(
+                '--ui-language', 'en',
+                '--identify-verbose', $Job.VideoPath
+            )
+            
+            $identifyOutput = & $global:VideoTools.MkvMerge @mkvmergeArgs 2>&1
+            $tagsContent = Parse-TagsFromMkvMerge -Output $identifyOutput
+            
+            if ($tagsContent) {
+                # Создаем XML файл с тегами
+                Create-TagsXml -TagsContent $tagsContent -OutputFile $tagsFile
+            } else {
+                Write-Log "Не удалось извлечь теги из исходного файла" -Severity Warning -Category 'Metadata'
+                return $null
+            }
+        } else {
+            # Если mkvpropedit успешно создал файл, копируем его
+            if (Test-Path -LiteralPath $sourceTagsFile -PathType Leaf) {
+                Copy-Item -LiteralPath $sourceTagsFile -Destination $tagsFile -Force
+                Write-Log "Теги успешно скопированы из исходного файла" -Severity Success -Category 'Metadata'
+            } else {
+                Write-Log "Файл тегов не создан mkvpropedit" -Severity Warning -Category 'Metadata'
+                return $null
+            }
+        }
+        
+        # Добавляем файл тегов в список временных файлов
+        $Job.TempFiles.Add($tagsFile)
+        if (Test-Path -LiteralPath $sourceTagsFile) {
+            $Job.TempFiles.Add($sourceTagsFile)
+        }
+        
+        return $tagsFile
+    }
+    catch {
+        Write-Log "Ошибка при копировании тегов из исходного файла: $_" -Severity Warning -Category 'Metadata'
+        return $null
+    }
+}
+
+function Parse-TagsFromMkvMerge {
+    [CmdletBinding()]
+    param([string[]]$Output)
+    
+    try {
+        $tags = [System.Collections.Generic.List[hashtable]]::new()
+        $currentTag = $null
+        
+        foreach ($line in $Output) {
+            $line = $line.Trim()
+            
+            # Ищем строки с тегами
+            if ($line -match '^\| \+ (Tag.+)$') {
+                if ($currentTag) {
+                    $tags.Add($currentTag)
+                }
+                $currentTag = @{ Name = $Matches[1].Trim(); Elements = @() }
+            }
+            elseif ($currentTag -and $line -match '^\|   \+ Simple.+name:\s*"([^"]+)".+string:\s*"([^"]+)"') {
+                $currentTag.Elements += @{
+                    Name = $Matches[1]
+                    Value = $Matches[2]
+                }
+            }
+            elseif ($line -match '^\|   \| \+ Tag') {
+                # Вложенные теги пока не обрабатываем
+                continue
+            }
+        }
+        
+        if ($currentTag) {
+            $tags.Add($currentTag)
+        }
+        
+        return $tags
+    }
+    catch {
+        Write-Verbose "Ошибка парсинга тегов из mkvmerge: $_"
+        return $null
+    }
+}
+
+function Create-TagsXml {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][array]$TagsContent,
+        [Parameter(Mandatory)][string]$OutputFile
+    )
+    
+    try {
+        $settings = [System.Xml.XmlWriterSettings]@{
+            Indent = $true
+            Encoding = [System.Text.Encoding]::UTF8
+        }
+        
+        $xmlWriter = [System.Xml.XmlWriter]::Create($OutputFile, $settings)
+        try {
+            $xmlWriter.WriteStartDocument()
+            $xmlWriter.WriteStartElement("Tags")
+            
+            foreach ($tag in $TagsContent) {
+                $xmlWriter.WriteStartElement("Tag")
+                $xmlWriter.WriteStartElement("Targets")
+                
+                # Добавляем тип цели (50 = Video, 60 = Audio, etc.)
+                $xmlWriter.WriteElementString("TargetTypeValue", "50")
+                
+                $xmlWriter.WriteEndElement() # Targets
+                
+                # Добавляем Simple элементы
+                foreach ($element in $tag.Elements) {
+                    $xmlWriter.WriteStartElement("Simple")
+                    $xmlWriter.WriteElementString("Name", $element.Name)
+                    $xmlWriter.WriteElementString("String", $element.Value)
+                    $xmlWriter.WriteEndElement() # Simple
+                }
+                
+                $xmlWriter.WriteEndElement() # Tag
+            }
+            
+            $xmlWriter.WriteEndElement() # Tags
+            $xmlWriter.WriteEndDocument()
+        }
+        finally {
+            $xmlWriter.Close()
+        }
+        
+        Write-Verbose "Создан XML файл тегов: $OutputFile"
+    }
+    catch {
+        Write-Verbose "Ошибка создания XML тегов: $_"
+    }
+}
+
 function Invoke-ProcessMetaData {
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable]$Job)
@@ -22,14 +182,46 @@ function Invoke-ProcessMetaData {
 
         # Поиск файла обложки в директории исходного файла
         $coverFiles = @('cover.jpg', 'cover.png', 'cover.webp', 'folder.jpg', 'folder.png', 'folder.webp')
-        $coverFile = $null
+        $coverRegexPatterns = @(
+            'season\d+\-poster\.(jpg|jpeg|png|webp)',
+            'poster\.(jpg|jpeg|png|webp)',
+            'cover-\d+\.(jpg|jpeg|png|webp)'
+        )
         
+        $coverFile = $null
+        $sourceDir = [IO.Path]::GetDirectoryName($Job.VideoPath)
+        
+        # Сначала проверяем статические имена файлов
         foreach ($coverName in $coverFiles) {
-            $potentialCover = Join-Path -Path ([IO.Path]::GetDirectoryName($Job.VideoPath)) -ChildPath $coverName
+            $potentialCover = Join-Path -Path $sourceDir -ChildPath $coverName
             if (Test-Path -LiteralPath $potentialCover -PathType Leaf) {
                 $coverFile = $potentialCover
                 Write-Log "Найдена обложка: $coverFile" -Severity Information -Category 'Metadata'
                 break
+            }
+        }
+        
+        # Если не нашли статические имена, ищем по регулярным выражениям
+        if (-not $coverFile) {
+            Write-Log "Поиск обложки по регулярным выражениям..." -Severity Information -Category 'Metadata'
+            
+            foreach ($pattern in $coverRegexPatterns) {
+                try {
+                    # Получаем все файлы в директории и фильтруем по регулярному выражению
+                    $allFiles = Get-ChildItem -Path $sourceDir -File | Where-Object { 
+                        $_.Name -match $pattern 
+                    }
+                    
+                    if ($allFiles.Count -gt 0) {
+                        # Сортируем по дате изменения (новые сначала) и берем первый файл
+                        $coverFile = ($allFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+                        Write-Log "Найдена обложка по шаблону '$pattern': $coverFile" -Severity Information -Category 'Metadata'
+                        break
+                    }
+                }
+                catch {
+                    Write-Log "Ошибка при обработке шаблона '$pattern': $_" -Severity Warning -Category 'Metadata'
+                }
             }
         }
         
@@ -41,6 +233,8 @@ function Invoke-ProcessMetaData {
             $Job.Metadata.CoverFile = $coverDest
             $Job.TempFiles.Add($coverDest)
             Write-Log "Обложка скопирована во временную директорию" -Severity Information -Category 'Metadata'
+        } else {
+            Write-Log "Обложка не найдена" -Severity Warning -Category 'Metadata'
         }
 
         # Извлечение информации
@@ -65,6 +259,10 @@ function Invoke-ProcessMetaData {
             $Job.NFOFields = $fields
             $Job.NfoTags = $nfoTagsFile
             $Job.TempFiles.Add($nfoTagsFile)
+        } else {
+            # Если NFO нет, копируем теги из исходного MKV файла
+            Write-Log "NFO файл отсутствует, будет выполнена попытка копирования тегов из исходного MKV" -Severity Information -Category 'Metadata'
+            $Job.NfoTags = Copy-TagsFromSource -Job $Job
         }
 
         $Job.TempFiles.Add($metadataDir)
@@ -157,6 +355,10 @@ function Invoke-ProcessMP4Metadata {
             $Job.NFOFields = $fields
             $Job.NfoTags = $nfoTagsFile
             $Job.TempFiles.Add($nfoTagsFile)
+        } else {
+            # Для MP4 файлов тоже копируем теги из исходника
+            Write-Log "NFO файл отсутствует, будет выполнена попытка копирования тегов из MP4" -Severity Information -Category 'Metadata'
+            $Job.NfoTags = Copy-MP4TagsFromSource -Job $Job
         }
 
         $Job.TempFiles.Add($metadataDir)
@@ -166,6 +368,63 @@ function Invoke-ProcessMP4Metadata {
     catch {
         Write-Log "Ошибка при обработке метаданных MP4: $_" -Severity Error -Category 'Metadata'
         throw
+    }
+}
+
+function Copy-MP4TagsFromSource {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Job)
+    
+    try {
+        Write-Log "Копирование тегов из MP4 файла" -Severity Information -Category 'Metadata'
+        
+        $tagsFile = Join-Path -Path $Job.Metadata.TempDir -ChildPath "$($Job.BaseName)_mp4_tags.xml"
+        
+        # Извлекаем метаданные из MP4 с помощью ffprobe
+        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -print_format json -show_format $Job.VideoPath
+        $formatInfo = $ffprobeOutput | ConvertFrom-Json
+        
+        if ($formatInfo.format.tags) {
+            $settings = [System.Xml.XmlWriterSettings]@{
+                Indent = $true
+                Encoding = [System.Text.Encoding]::UTF8
+            }
+            
+            $xmlWriter = [System.Xml.XmlWriter]::Create($tagsFile, $settings)
+            try {
+                $xmlWriter.WriteStartDocument()
+                $xmlWriter.WriteStartElement("Tags")
+                $xmlWriter.WriteStartElement("Tag")
+                $xmlWriter.WriteStartElement("Targets")
+                $xmlWriter.WriteElementString("TargetTypeValue", "50")
+                $xmlWriter.WriteEndElement() # Targets
+                
+                foreach ($tag in $formatInfo.format.tags.PSObject.Properties) {
+                    $xmlWriter.WriteStartElement("Simple")
+                    $xmlWriter.WriteElementString("Name", $tag.Name.ToUpper())
+                    $xmlWriter.WriteElementString("String", $tag.Value)
+                    $xmlWriter.WriteEndElement() # Simple
+                }
+                
+                $xmlWriter.WriteEndElement() # Tag
+                $xmlWriter.WriteEndElement() # Tags
+                $xmlWriter.WriteEndDocument()
+                
+                Write-Log "Теги MP4 успешно извлечены" -Severity Success -Category 'Metadata'
+                $Job.TempFiles.Add($tagsFile)
+                return $tagsFile
+            }
+            finally {
+                $xmlWriter.Close()
+            }
+        } else {
+            Write-Log "В MP4 файле не найдены теги" -Severity Warning -Category 'Metadata'
+            return $null
+        }
+    }
+    catch {
+        Write-Log "Ошибка при копировании тегов из MP4: $_" -Severity Warning -Category 'Metadata'
+        return $null
     }
 }
 
@@ -181,21 +440,25 @@ function Complete-MediaFile {
 
     try {
         Write-Log "Начало создания итогового файла" -Severity Information -Category 'Muxing'
+        
+        # Формируем заголовок
         if ($job.NFOFields) {
-        # Формируем название файла
-        $fileTitle = "{0} - s{1:00}e{2:00} - {3} [{4}]" -f `
-            $job.NFOFields.SHOWTITLE,
-            [int]$job.NFOFields.SEASON_NUMBER,
-            [int]$job.NFOFields.PART_NUMBER,
-            $job.NFOFields.TITLE,
-            $airDateFormatted
+            $fileTitle = "{0} - s{1:00}e{2:00} - {3} [{4}]" -f `
+                $job.NFOFields.SHOWTITLE,
+                [int]$job.NFOFields.SEASON_NUMBER,
+                [int]$job.NFOFields.PART_NUMBER,
+                $job.NFOFields.TITLE,
+                $airDateFormatted
+        } else {
+            $fileTitle = [System.IO.Path]::GetFileNameWithoutExtension($job.VideoPath)
         }
+        
         $mkvArgs = @(
             '--ui-language', 'en',
             '--priority', 'lower',
             '--output', $Job.FinalOutput,
-            $Job.VideoOutput,
-            $(if (-not [string]::IsNullOrWhiteSpace($fileTitle) ) { @('--title', $fileTitle) }),
+            $Job.VideoOutput
+            $(if (-not [string]::IsNullOrWhiteSpace($fileTitle) ) { @('--title', $fileTitle) })
             '--no-date',
             '--no-track-tags'
         )
@@ -203,9 +466,9 @@ function Complete-MediaFile {
         # Аудиодорожки
         foreach ($audioTrack in $Job.AudioOutputs) {
             $mkvArgs += @(
-                '--no-track-tags',
-                '--language', "0:$($audioTrack.Language)",
-                $(if ($audioTrack.Title) { @('--track-name', "0:$($audioTrack.Title)") }),
+                '--no-track-tags'
+                $(if ($audioTrack.Language) { @('--language',   "0:$($audioTrack.Language)") })
+                $(if ($audioTrack.Title)    { @('--track-name', "0:$($audioTrack.Title)") })
                 '--default-track-flag', "0:$(if ($audioTrack.Default) {'yes'} else {'no'})",
                 '--forced-display-flag', "0:$(if ($audioTrack.Forced) {'yes'} else {'no'})",
                 $audioTrack.Path
@@ -232,9 +495,15 @@ function Complete-MediaFile {
             $mkvArgs += @('--chapters', $chaptersFile)
         }
 
-        # Теги
-        $tagsFile = if ($Job.NfoTags) { $Job.NfoTags } else { Join-Path -Path $Job.Metadata.TempDir -ChildPath "$($Job.BaseName)_tags.xml" }
-        if (Test-Path -LiteralPath $tagsFile -PathType Leaf) {
+        # Обработка тегов
+        $tagsFile = if ($Job.NfoTags) { 
+            $Job.NfoTags 
+        } else {
+            # Если NFO нет, копируем теги из исходного файла
+            Copy-TagsFromSource -Job $Job
+        }
+        
+        if ($tagsFile -and (Test-Path -LiteralPath $tagsFile -PathType Leaf)) {
             $mkvArgs += @('--global-tags', $tagsFile)
         }
 
@@ -334,6 +603,17 @@ function Invoke-ProcessAttachments {
     }
 }
 
+<# function Get-SafeFileName {
+    [CmdletBinding()]
+    param([string]$FileName)
+    
+    if ([string]::IsNullOrWhiteSpace($FileName)) { return [string]::Empty }
+    foreach ($char in [IO.Path]::GetInvalidFileNameChars()) {
+        $FileName = $FileName.Replace($char, '_')
+    }
+    return $FileName
+} #>
+
 function Invoke-ProcessSubtitles {
     param ([object]$jsonInfo, [hashtable]$Job, [string]$metadataDir)
 
@@ -357,7 +637,7 @@ function Invoke-ProcessSubtitles {
                 "sID{0}_[{1}]_{{`{2`}}}{3}{4}.{5}" -f 
                 $track.id,
                 $lang,
-                $track.properties.track_name,
+                (Get-SafeFileName -FileName $track.properties.track_name),
                 ($track.properties.default_track ? '+' : '-'),
                 ($track.properties.forced_track ? 'F' : ''),
                 $ext
@@ -714,4 +994,5 @@ function ConvertFrom-NfoToXml {
 }
 
 Export-ModuleMember -Function Invoke-ProcessMetaData, Complete-MediaFile, `
-    Invoke-ProcessMP4Metadata, Convert-MP4ChaptersToXML, ConvertFrom-NfoToXml
+    Invoke-ProcessMP4Metadata, Convert-MP4ChaptersToXML, ConvertFrom-NfoToXml, `
+    Copy-TagsFromSource, Copy-MP4TagsFromSource

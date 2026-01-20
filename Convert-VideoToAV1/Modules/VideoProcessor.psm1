@@ -3,6 +3,29 @@
     Модуль для обработки видео
 #>
 
+function Test-X265VpySupport {
+    [CmdletBinding()]
+    param([string]$X265Path)
+    
+    try {
+        # Запускаем x265 с параметром --help и проверяем наличие --input
+        $helpOutput = & $X265Path --help 2>&1
+        
+        # Проверяем, поддерживает ли x265 параметр --input для VPY файлов
+        if ($helpOutput -match "--input" -and $helpOutput -match "y4m") {
+            Write-Log "x265 поддерживает прямое чтение VPY файлов" -Severity Information -Category 'Video'
+            return $true
+        } else {
+            Write-Log "x265 не поддерживает прямое чтение VPY файлов, будет использоваться vspipe" -Severity Warning -Category 'Video'
+            return $false
+        }
+    }
+    catch {
+        Write-Log "Ошибка проверки поддержки VPY в x265: $_" -Severity Warning -Category 'Video'
+        return $false
+    }
+}
+
 function Get-VapourSynthTemplate {
     [CmdletBinding()]
     param(

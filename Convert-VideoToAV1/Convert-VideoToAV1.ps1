@@ -12,17 +12,20 @@ using namespace System.IO
 param (
     [Parameter(Mandatory = $false, Position = 0)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Container })]
-    [string]$InputDirectory = 'y:\.temp\YT_y\Стендап комики 4k\',
+    [string]$InputDirectory = 'g:\Видео\Сериалы\Зарубежные\Очень странные дела (Stranger Things)\season 05\Stranger.Things.2025.S05.2160p.NF.WEB-DL.HDR.H.265.Master5\',
     
     [Parameter(Mandatory = $false)]
-    [string]$OutputDirectory = (Join-Path -Path $InputDirectory -ChildPath '.av1'),
+    [string]$OutputDirectory = (Join-Path -Path $InputDirectory -ChildPath '.enc'),
 
     [Parameter(Mandatory = $false)]
     [string]$InputFilesFilter = '',
     
     [Parameter(Mandatory = $false)]
-    [Switch]$CopyFiletoTempDir = $false,
+    [string]$TempDir = 'r:\.temp\',
     
+    [Parameter(Mandatory = $false)]
+    [Switch]$CopyFiletoTempDir = $false,
+
     [Parameter(Mandatory = $false)]
     [int]$TrimStartFrame = 0,
     
@@ -39,7 +42,7 @@ param (
     [string]$TrimTimecode = "",
     
     [Parameter(Mandatory = $false)]
-    [System.Object]$CropParameters<#  = @{
+    [System.Object]$CropParameters<#   = @{
         Left   = 0
         Right  = 0
         Top    = 0
@@ -54,10 +57,20 @@ param (
     # Новый параметр: путь к custom template VPY файлу
     [Parameter(Mandatory = $false)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
-    [string]$TemplatePath
+    [string]$TemplatePath = 'g:\Видео\Сериалы\Зарубежные\Очень странные дела (Stranger Things)\season 05\Stranger.Things.2025.S05.2160p.NF.WEB-DL.HDR.H.265.Master5\template_StrangerThings_s05.vpy'
 )
 
 begin {
+    # Splash
+    Write-Host @'
+  ____                          _     __     ___     _          _____       ___     ___ 
+ / ___|___  _ ____   _____ _ __| |_   \ \   / (_) __| | ___  __|_   _|__   / \ \   / / |
+| |   / _ \| '_ \ \ / / _ \ '__| __|___\ \ / /| |/ _` |/ _ \/ _ \| |/ _ \ / _ \ \ / /| |
+| |__| (_) | | | \ V /  __/ |  | ||_____\ V / | | (_| |  __/ (_) | | (_) / ___ \ V / | |
+ \____\___/|_| |_|\_/ \___|_|   \__|     \_/  |_|\__,_|\___|\___/|_|\___/_/   \_\_/  |_|
+'@ -ForegroundColor DarkBlue
+
+
     # Импорт модулей
     $modulesPath = Join-Path $PSScriptRoot "Modules"
     @("VideoProcessor.psm1", "AudioProcessor.psm1", "MetadataProcessor.psm1", "Utilities.psm1", "TempFileManager.psm1") | ForEach-Object {
@@ -115,12 +128,12 @@ process {
                 
                 # Создание рабочей директории
                 $BaseName = [IO.Path]::GetFileNameWithoutExtension($videoFile.Name)
-                $WorkingDir = Join-Path -Path $OutputDirectory -ChildPath "${BaseName}.tmp"
+                $WorkingDir = Join-Path -Path $TempDir -ChildPath "${BaseName}.tmp"
                 New-Item -Path $WorkingDir -ItemType Directory -Force | Out-Null
                 
                 # Копирование файла при необходимости
                 $videoFileNameTmp = if ($CopyFiletoTempDir) {
-                    $dest = Join-Path -Path $OutputDirectory -ChildPath $videoFile.Name
+                    $dest = Join-Path -Path $TempDir -ChildPath $videoFile.Name
                     if (-not (Test-Path -LiteralPath $dest)) {
                         Copy-Item -Path $videoFile.FullName -Destination $dest -Force
                         # Копирование NFO файла
@@ -146,6 +159,11 @@ process {
                     CropParams  = $CropParameters
                 }
                 
+                # Если используется временный файл, то добавляем его в список для удаления
+                if ($CopyFiletoTempDir -and ($videoFileTmp.FullName -ne $videoFile.FullName)) {
+                    $Job.TempFiles.Add($videoFileTmp.FullName)
+                }
+
                 # Устанавливаем выбранный энкодер
                 $job.Encoder = $Encoder
                 $job.EncoderPath = Get-EncoderPath -EncoderName $Encoder
@@ -248,6 +266,21 @@ process {
                 Write-Log "Параметры обрезки: Start=$($job.TrimStartSeconds)s, Duration=$($job.TrimDurationSeconds)s" -Severity Information -Category 'Main'
                 
                 # 2. ОБРАБОТКА АУДИО (второй этап)
+                # Анализ аудиодорожек для рекомендаций
+                if (-not $CopyAudioMode) {
+                    $audioRecommendation = Get-AudioProcessingRecommendation -VideoPath $videoFileTmp.FullName
+                    if ($audioRecommendation) {
+                        Write-Log "Анализ аудио: $($audioRecommendation.TotalTracks) дорожек" -Severity Information -Category 'Audio'
+                        Write-Log "Из них Opus: $($audioRecommendation.OpusTracks)" -Severity Information -Category 'Audio'
+                        
+                        if ($audioRecommendation.RecommendedAction -eq 'extract_all') {
+                            Write-Log "Все дорожки уже в Opus - будет быстрое извлечение" -Severity Success -Category 'Audio'
+                        } elseif ($audioRecommendation.RecommendedAction -eq 'mixed') {
+                            Write-Log "Смешанный режим: извлечение Opus + перекодирование остальных" -Severity Information -Category 'Audio'
+                        }
+                    }
+                }
+
                 $audioMode = if ($global:Config.Encoding.Audio.CopyAudio) { "копирование" } else { "перекодирование в Opus" }
                 Write-Log "Этап 2/3: Обработка аудио ($audioMode)" -Severity Information -Category 'Main'
                 $job = ConvertTo-OpusAudio -Job $job
