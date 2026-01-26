@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Конвертирует видеофайлы в формат AV1 с обрезкой по времени
+    Конвертирует видеофайлы в формат AV1/HEVC через универсальный конвейер
 .DESCRIPTION
-    Обрабатывает видеофайлы, конвертируя видео в AV1, аудио в Opus,
-    с поддержкой обрезки по времени и сохранением всех метаданных.
+    Обрабатывает видеофайлы любого формата, ремукся их в MKV, затем конвертируя видео в AV1/HEVC,
+    аудио в Opus, с поддержкой обрезки и сохранением всех метаданных.
 #>
 
 using namespace System.IO
@@ -12,11 +12,11 @@ using namespace System.IO
 param (
     [Parameter(Mandatory = $false, Position = 0)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Container })]
-    [string]$InputDirectory = 'g:\Видео\Сериалы\Зарубежные\Очень странные дела (Stranger Things)\season 05\Stranger.Things.2025.S05.2160p.NF.WEB-DL.HDR.H.265.Master5\',
+    [string]$InputDirectory = 'g:\Видео\Сериалы\Зарубежные\Очень странные дела (Stranger Things)\season 05\',
     
     [Parameter(Mandatory = $false)]
     [string]$OutputDirectory = (Join-Path -Path $InputDirectory -ChildPath '.enc'),
-
+    
     [Parameter(Mandatory = $false)]
     [string]$InputFilesFilter = '',
     
@@ -25,7 +25,7 @@ param (
     
     [Parameter(Mandatory = $false)]
     [Switch]$CopyFiletoTempDir = $false,
-
+    
     [Parameter(Mandatory = $false)]
     [int]$TrimStartFrame = 0,
     
@@ -46,27 +46,26 @@ param (
     
     [Parameter(Mandatory = $false)]
     [bool]$CopyVideo = $false,
-
+    
     [Parameter(Mandatory = $false)]
-    [System.Object]$CropParameters<#   = @{
-        Left   = 0
-        Right  = 0
-        Top    = 0
-        Bottom = 0
-    } #>,
-
-    # Параметр для выбора энкодера (значение по умолчанию установим позже)
+    [System.Object]$CropParameters,
+    
     [Parameter(Mandatory = $false)]
     [ValidateSet(
         'x265', 'SvtAv1Enc', 'SvtAv1EncESS', 'SvtAv1EncHDR',
         'SvtAv1EncPSYEX', 'Rav1eEnc', 'AomAv1Enc', 'SvtAv1EncESS_grain'
     )]
     [string]$Encoder,
-
-    # Новый параметр: путь к custom template VPY файлу
+    
     [Parameter(Mandatory = $false)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
-    [string]$TemplatePath = 'g:\Видео\Сериалы\Зарубежные\Очень странные дела (Stranger Things)\season 05\Stranger.Things.2025.S05.2160p.NF.WEB-DL.HDR.H.265.Master5\template_StrangerThings_s05.vpy'
+    [string]$TemplatePath,
+    
+    [Parameter(Mandatory = $false)]
+    [switch]$ForceRemux = $false,
+    
+    [Parameter(Mandatory = $false)]
+    [switch]$KeepRemuxedFiles = $false
 )
 
 begin {
@@ -78,11 +77,182 @@ begin {
 | |__| (_) | | | \ V /  __/ |  | ||_____\ V / | | (_| |  __/ (_) | | (_) / ___ \ V / | |
  \____\___/|_| |_|\_/ \___|_|   \__|     \_/  |_|\__,_|\___|\___/|_|\___/_/   \_\_/  |_|
 '@ -ForegroundColor DarkBlue
-
-
+    
+    # Вспомогательные функции (все внутри begin блока)
+    function New-VideoJob {
+        [CmdletBinding()]
+        param(
+            [string]$VideoPath,
+            [string]$BaseName,
+            [string]$WorkingDir,
+            [string]$OriginalPath,
+            [bool]$IsRemuxed,
+            [object]$CropParams,
+            [bool]$CopyAudioOverride
+        )
+        
+        $job = @{
+            VideoPath         = $VideoPath
+            BaseName          = $BaseName
+            WorkingDir        = $WorkingDir
+            TempFiles         = [System.Collections.Generic.List[string]]::new()
+            StartTime         = [DateTime]::Now
+            IsRemuxed         = $IsRemuxed
+            OriginalPath      = $OriginalPath
+            CropParams        = $CropParams
+            CopyAudioOverride = $CopyAudioOverride
+        }
+        
+        return $job
+    }
+    
+    function Get-OutputFilename {
+        [CmdletBinding()]
+        param([hashtable]$Job)
+        
+        try {
+            if ($Job.NFOFields) {
+                # Получаем информацию о разрешении видео
+                $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams v:0 `
+                    -show_entries stream=width, height, codec_name -of json $Job.VideoPath | ConvertFrom-Json
+                
+                $width = $ffprobeOutput.streams[0].width
+                $height = $ffprobeOutput.streams[0].height
+                
+                # Определяем разрешение
+                $resolution = switch ($width) {
+                    { $_ -gt 3840 } { "8k"; break }
+                    { $_ -gt 2560 } { "4k"; break }
+                    { $_ -gt 1920 } { "2k"; break }
+                    { $_ -gt 1280 } { "1080p"; break }
+                    default { "${height}p" }
+                }
+                
+                # Форматируем дату
+                $airDate = if ($Job.NFOFields.AIR_DATE) { $Job.NFOFields.AIR_DATE } else { $Job.NFOFields.DATE_RELEASED }
+                if ($airDate -and $airDate -match "^\d{4}-\d{2}-\d{2}") {
+                    $airDateFormatted = $airDate
+                } else {
+                    $airDateFormatted = "0000-00-00"
+                }
+                
+                # Формируем имя файла
+                $finalOutputName = "{0} - s{1:00}e{2:00} - {3} [{4}][{5}][av1]_out.mkv" -f `
+                    $Job.NFOFields.SHOWTITLE,
+                [int]$Job.NFOFields.SEASON_NUMBER,
+                [int]$Job.NFOFields.PART_NUMBER,
+                $Job.NFOFields.TITLE,
+                $airDateFormatted,
+                $resolution
+                
+                # Заменяем недопустимые символы
+                $invalidChars = [IO.Path]::GetInvalidFileNameChars()
+                foreach ($char in $invalidChars) {
+                    $finalOutputName = $finalOutputName.Replace($char, '_')
+                }
+                
+                Write-Log "Сформировано имя выходного файла: $finalOutputName" -Severity Information -Category 'Main'
+                return $finalOutputName
+            }
+        }
+        catch {
+            Write-Log "Ошибка при формировании имени файла: $_" -Severity Warning -Category 'Metadata'
+        }
+        
+        # Значение по умолчанию
+        return "$($Job.BaseName)_out.mkv"
+    }
+    
+    function Get-TrimParameters {
+        [CmdletBinding()]
+        param(
+            [hashtable]$Job,
+            [int]$TrimStartFrame,
+            [double]$TrimStartSeconds,
+            [int]$TrimEndFrame,
+            [double]$TrimEndSeconds,
+            [string]$TrimTimecode
+        )
+        
+        $result = @{
+            StartSeconds = 0
+            DurationSeconds = 0
+        }
+        
+        # Расчет стартового времени
+        if ($TrimStartFrame -gt 0) {
+            $result.StartSeconds = $TrimStartFrame / $Job.FrameRate
+        }
+        elseif ($TrimTimecode) {
+            $result.StartSeconds = ConvertTo-Seconds -TimeString $TrimTimecode -FrameRate $Job.FrameRate
+        }
+        else {
+            $result.StartSeconds = $TrimStartSeconds
+        }
+        
+        # Расчет продолжительности
+        if ($TrimEndFrame -gt 0 -and $TrimStartFrame -gt 0) {
+            $result.DurationSeconds = ($TrimEndFrame - $TrimStartFrame) / $Job.FrameRate
+        }
+        elseif ($TrimEndSeconds -gt 0 -and $TrimStartSeconds -gt 0) {
+            $result.DurationSeconds = $TrimEndSeconds - $TrimStartSeconds
+        }
+        
+        return $result
+    }
+    
+    function Measure-VideoQuality {
+        [CmdletBinding()]
+        param([hashtable]$Job)
+        
+        try {
+            Write-Log "Расчёт VMAF..." -Severity Information -Category 'VMAF'
+            
+            $gqmParams = @{
+                DistortedPath     = $Job.FinalOutput
+                ReferencePath     = $Job.ScriptFile
+                TrimStartSeconds  = $Job.TrimStartSeconds
+                DurationSeconds   = $Job.TrimDurationSeconds
+                Metrics           = 'VMAF'
+                Subsample         = 5
+            }
+            
+            $quality = Get-VideoQualityMetrics @gqmParams
+            $Job.Quality = $quality.VMAF
+            
+            Write-Log "VMAF: $($quality.VMAF)" -Severity Information -Category 'VMAF'
+            
+            # Переименование файла с VMAF в имени
+            if ($quality.VMAF -gt 0) {
+                $NewFileName = [IO.Path]::ChangeExtension($Job.FinalOutput, ("_[{0:0.00}].mkv" -f $quality.VMAF))
+                Rename-Item -LiteralPath $Job.FinalOutput -NewName $NewFileName
+                $Job.FinalOutput = $NewFileName
+            }
+        }
+        catch {
+            $Job.Quality = 0
+            Write-Log "Ошибка при расчёте VMAF: $_" -Severity Error -Category 'VMAF'
+        }
+    }
+    
+    function Save-EncodingSettings {
+        [CmdletBinding()]
+        param([hashtable]$Job)
+        
+        try {
+            $settingsFile = [IO.Path]::ChangeExtension($Job.FinalOutput, "json")
+            ($Job | ConvertTo-Json -Depth 10) | Out-File -LiteralPath $settingsFile -Encoding UTF8
+            Write-Log "Настройки сохранены: $settingsFile" -Severity Information -Category 'Main'
+        }
+        catch {
+            Write-Log "Ошибка сохранения настроек: $_" -Severity Warning -Category 'Main'
+        }
+    }
+    
     # Импорт модулей
     $modulesPath = Join-Path $PSScriptRoot "Modules"
-    @("VideoProcessor.psm1", "AudioProcessor.psm1", "MetadataProcessor.psm1", "Utilities.psm1", "TempFileManager.psm1") | ForEach-Object {
+    @("VideoProcessor.psm1", "AudioProcessor.psm1", "MetadataProcessor.psm1", 
+      "Utilities.psm1", "TempFileManager.psm1", "RemuxProcessor.psm1") | ForEach-Object {
         Import-Module (Join-Path $modulesPath $_) -Force -ErrorAction Stop
     }
     
@@ -92,14 +262,14 @@ begin {
     if (-not $PSBoundParameters.ContainsKey('Encoder')) {
         $Encoder = $global:Config.Encoding.DefaultEncoder
     }
-
-    # Проверяем доступность энкодера/пресета
+    
+    # Проверяем доступность энкодера
     $availableEncoders = $global:Config.Encoding.AvailableEncoders.Keys
     $encoderExists = $availableEncoders -contains $Encoder -or 
     $global:Config.Encoding.Video.EncoderParams.ContainsKey($Encoder)
-
+    
     if (-not $encoderExists) {
-        Write-Log "Предупреждение: Энкодер '$Encoder' не найден в AvailableEncoders, но может быть пресетом" -Severity Warning -Category 'Config'
+        Write-Log "Предупреждение: Энкодер '$Encoder' не найден в AvailableEncoders" -Severity Warning -Category 'Config'
     }
     
     # ПЕРЕОПРЕДЕЛЕНИЕ ПАРАМЕТРОВ КОНФИГА
@@ -112,7 +282,7 @@ begin {
         $global:Config.Encoding.Video.CopyVideo = $CopyVideo
         Write-Log "Переопределен CopyVideo: $CopyVideo" -Severity Information -Category 'Config'
     }
-
+    
     # Проверка инструментов
     foreach ($tool in $global:VideoTools.GetEnumerator()) {
         if (-not (Get-Command -Name $tool.Value -ErrorAction SilentlyContinue)) {
@@ -124,149 +294,127 @@ begin {
     if (-not (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
         New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
     }
-
+    
     Write-Log "Выбран энкодер: $Encoder" -Severity Information -Category "Main"
 }
 
 process {
     try {
-        # Поиск видеофайлов
+        # Поиск видеофайлов (поддерживаемые форматы)
+        $supportedFormats = Get-SupportedVideoFormats
         $videoFiles = Get-ChildItem -LiteralPath $InputDirectory -File |
         Where-Object {
-            $_.Extension -match 'mkv|mp4' -and
+            $_.Extension.ToLower() -in $supportedFormats -and
             $_.Name -notmatch '_out\.mkv$'
         }
-        if (-not [string]::IsNullOrWhiteSpace($InputFilesFilter)) { $videoFiles = @($videoFiles | Where-Object { $_.Name -match $InputFilesFilter }) }
-
+        
+        if (-not [string]::IsNullOrWhiteSpace($InputFilesFilter)) { 
+            $videoFiles = @($videoFiles | Where-Object { $_.Name -match $InputFilesFilter }) 
+        }
+        
         if (-not $videoFiles) {
-            Write-Error "В директории $InputDirectory не найдены MKV/MP4 файлы"
+            Write-Error "В директории $InputDirectory не найдены видеофайлы поддерживаемых форматов"
             return
         }
         
         Write-Log "Найдено файлов: $($videoFiles.Count)" -Severity Information -Category "Main"
-
+        
         # Обработка каждого файла
         foreach ($videoFile in $videoFiles) {
             $job = $null
             try {
                 Write-Log "Начало обработки файла: $($videoFile.Name)" -Severity Information -Category 'Main'
                 
-                # Определяем тип файла
-                $fileExtension = [System.IO.Path]::GetExtension($videoFile.Name).ToLower()
-                $isMP4 = $fileExtension -eq '.mp4'
-                
                 # Создание рабочей директории
                 $BaseName = [IO.Path]::GetFileNameWithoutExtension($videoFile.Name)
                 $WorkingDir = Join-Path -Path $TempDir -ChildPath "${BaseName}.tmp"
                 New-Item -Path $WorkingDir -ItemType Directory -Force | Out-Null
                 
-                # Копирование файла при необходимости
-                $videoFileNameTmp = if ($CopyFiletoTempDir) {
-                    $dest = Join-Path -Path $TempDir -ChildPath $videoFile.Name
-                    if (-not (Test-Path -LiteralPath $dest)) {
-                        Copy-Item -Path $videoFile.FullName -Destination $dest -Force
-                        # Копирование NFO файла
-                        $nfoSrc = [IO.Path]::ChangeExtension($videoFile.FullName, 'nfo')
-                        $nfoDst = [IO.Path]::ChangeExtension($dest, 'nfo')
-                        if (Test-Path $nfoSrc) { Copy-Item -Path $nfoSrc -Destination $nfoDst -Force }
+                # ============================================
+                # УНИВЕРСАЛЬНАЯ ПОДГОТОВКА ФАЙЛА
+                # ============================================
+                
+                $isMKV = [System.IO.Path]::GetExtension($videoFile.Name).ToLower() -eq '.mkv'
+                $needsRemux = $ForceRemux -or (-not $isMKV) -or (Test-NeedRemux -FilePath $videoFile.FullName)
+                
+                if ($needsRemux) {
+                    # Ремуксим файл в MKV
+                    Write-Log "Ремукс файла в MKV..." -Severity Information -Category 'Remux'
+                    
+                    $remuxedFile = Join-Path -Path $WorkingDir -ChildPath "${BaseName}_remuxed.mkv"
+                    
+                    # Используем универсальный ремукс
+                    $remuxResult = Convert-ToMKVUniversal `
+                        -InputFile $videoFile.FullName `
+                        -OutputFile $remuxedFile `
+                        -KeepTempFiles:$KeepRemuxedFiles
+                    
+                    if ($remuxResult -and (Test-Path -LiteralPath $remuxedFile)) {
+                        Write-Log "Ремукс завершен: $([System.IO.Path]::GetFileName($remuxedFile))" -Severity Success -Category 'Remux'
+                        
+                        # Создаем Job с ремукснутым файлом
+                        $job = New-VideoJob -VideoPath $remuxedFile `
+                            -BaseName $BaseName `
+                            -WorkingDir $WorkingDir `
+                            -OriginalPath $videoFile.FullName `
+                            -IsRemuxed $true `
+                            -CropParams $CropParameters `
+                            -CopyAudioOverride $CopyAudio
+                        
+                        $job.TempFiles.Add($remuxedFile)
+                    } else {
+                        throw "Ремукс не удался"
                     }
-                    $dest
-                }
-                else {
-                    $videoFile.FullName
+                } else {
+                    # Используем оригинальный MKV файл
+                    Write-Log "Используется оригинальный MKV файл" -Severity Information -Category 'Main'
+                    
+                    $videoFileNameTmp = if ($CopyFiletoTempDir) {
+                        $dest = Join-Path -Path $TempDir -ChildPath $videoFile.Name
+                        if (-not (Test-Path -LiteralPath $dest)) {
+                            Copy-Item -Path $videoFile.FullName -Destination $dest -Force
+                        }
+                        $dest
+                    } else {
+                        $videoFile.FullName
+                    }
+                    
+                    $job = New-VideoJob -VideoPath $videoFileNameTmp `
+                        -BaseName $BaseName `
+                        -WorkingDir $WorkingDir `
+                        -OriginalPath $videoFile.FullName `
+                        -IsRemuxed $false `
+                        -CropParams $CropParameters `
+                        -CopyAudioOverride $CopyAudio
+                    
+                    if ($CopyFiletoTempDir -and ($videoFileNameTmp -ne $videoFile.FullName)) {
+                        $job.TempFiles.Add($videoFileNameTmp)
+                    }
                 }
                 
-                $videoFileTmp = Get-Item -LiteralPath $videoFileNameTmp
-                
-                # Инициализация job
-                $job = @{
-                    VideoPath         = $videoFileTmp.FullName
-                    BaseName          = $BaseName
-                    WorkingDir        = $WorkingDir
-                    TempFiles         = [System.Collections.Generic.List[string]]::new()
-                    StartTime         = [DateTime]::Now
-                    IsMP4             = $isMP4
-                    CropParams        = $CropParameters
-                    CopyAudioOverride = $CopyAudio  # Передаем параметр переопределения
-                }                
-                # Если используется временный файл, то добавляем его в список для удаления
-                if ($CopyFiletoTempDir -and ($videoFileTmp.FullName -ne $videoFile.FullName)) {
-                    $Job.TempFiles.Add($videoFileTmp.FullName)
+                # Копируем NFO файл если есть
+                $nfoSrc = [IO.Path]::ChangeExtension($job.OriginalPath, 'nfo')
+                if (Test-Path -LiteralPath $nfoSrc) {
+                    $nfoDst = Join-Path -Path $WorkingDir -ChildPath "$BaseName.nfo"
+                    Copy-Item -LiteralPath $nfoSrc -Destination $nfoDst -Force
+                    $job.TempFiles.Add($nfoDst)
+                    Write-Log "NFO файл скопирован" -Severity Information -Category 'Metadata'
                 }
-
+                
                 # Устанавливаем выбранный энкодер
                 $job.Encoder = $Encoder
                 $job.EncoderPath = Get-EncoderPath -EncoderName $Encoder
                 $encoderConfig = Get-EncoderConfig -EncoderName $Encoder
                 $job.EncoderParams = Get-EncoderParams -EncoderName $Encoder -EncoderConfig $encoderConfig
-
                 
+                Write-Log "Параметры энкодера: $Encoder" -Severity Information -Category 'Video'
                 
-                Write-Log "Параметры энкодера: $($encoderConfig | ConvertTo-Json -Compress)" -Severity Verbose -Category 'Video'
-                Write-Log "Путь к энкодеру: $($job.EncoderPath)" -Severity Verbose -Category 'Video'
-                
-                # 1. ОБРАБОТКА МЕТАДАННЫХ (первым делом)
+                # 1. ОБРАБОТКА МЕТАДАННЫХ
                 Write-Log "Этап 1/3: Обработка метаданных" -Severity Information -Category 'Main'
-                
-                if ($isMP4) {
-                    $job = Invoke-ProcessMP4Metadata -Job $job
-                }
-                else {
-                    $job = Invoke-ProcessMetaData -Job $job
-                }
+                $job = Invoke-ProcessMetaData -Job $job
                 
                 # Формирование имени выходного файла на основе метаданных
-                $finalOutputName = "${BaseName}_out.mkv"  # значение по умолчанию
-                
-                if ($job.NFOFields) {
-                    try {
-                        # Получаем информацию о разрешении видео
-                        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams v:0 `
-                            -show_entries stream=width,height,codec_name -of json $job.VideoPath | ConvertFrom-Json
-                        
-                        $width = $ffprobeOutput.streams[0].width
-                        $height = $ffprobeOutput.streams[0].height
-                        
-                        # Определяем разрешение по ширине
-                        $resolution = switch ($width) {
-                            { $_ -gt 3840 } { "8k"; break }
-                            { $_ -gt 2560 } { "4k"; break }
-                            { $_ -gt 1920 } { "2k"; break }
-                            { $_ -gt 1280 } { "1080p"; break }
-                            default { "${_}p" }
-                        }
-
-                        # Форматируем дату
-                        $airDate = if ($job.NFOFields.AIR_DATE) { $job.NFOFields.AIR_DATE } else { $job.NFOFields.DATE_RELEASED }
-                        if ($airDate -and $airDate -match "^\d{4}-\d{2}-\d{2}") {
-                            $airDateFormatted = $airDate
-                        }
-                        else {
-                            $airDateFormatted = "0000-00-00"
-                        }
-                        
-                        # Формируем имя файла
-                        $finalOutputName = "{0} - s{1:00}e{2:00} - {3} [{4}][{5}][av1]_out.mkv" -f `
-                            $job.NFOFields.SHOWTITLE,
-                        [int]$job.NFOFields.SEASON_NUMBER,
-                        [int]$job.NFOFields.PART_NUMBER,
-                        $job.NFOFields.TITLE,
-                        $airDateFormatted,
-                        $resolution
-                        
-                        # Заменяем недопустимые символы в имени файла
-                        $invalidChars = [IO.Path]::GetInvalidFileNameChars()
-                        foreach ($char in $invalidChars) {
-                            $finalOutputName = $finalOutputName.Replace($char, '_')
-                        }
-                        
-                        Write-Log "Сформировано имя выходного файла: $finalOutputName" -Severity Information -Category 'Main'
-                    }
-                    catch {
-                        Write-Log "Ошибка при формировании имени файла: $_" -Severity Warning -Category 'Metadata'
-                    }
-                }
-                
+                $finalOutputName = Get-OutputFilename -Job $job
                 $job.FinalOutput = Join-Path -Path $OutputDirectory -ChildPath $finalOutputName
                 
                 if (Test-Path -LiteralPath $job.FinalOutput) {
@@ -279,88 +427,43 @@ process {
                 $job.FrameRate = $frameRate
                 
                 # Расчет параметров обрезки
-                $job.TrimStartSeconds = if ($TrimStartFrame -gt 0) { 
-                    $TrimStartFrame / $frameRate 
-                }
-                elseif ($TrimTimecode) { 
-                    ConvertTo-Seconds -TimeString $TrimTimecode -FrameRate $frameRate
-                }
-                else { 
-                    $TrimStartSeconds 
-                }
+                $trimParams = Get-TrimParameters -Job $job `
+                    -TrimStartFrame $TrimStartFrame `
+                    -TrimStartSeconds $TrimStartSeconds `
+                    -TrimEndFrame $TrimEndFrame `
+                    -TrimEndSeconds $TrimEndSeconds `
+                    -TrimTimecode $TrimTimecode
                 
-                $job.TrimDurationSeconds = if ($TrimEndFrame -gt 0 -and $TrimStartFrame -gt 0) { 
-                    ($TrimEndFrame - $TrimStartFrame) / $frameRate 
-                }
-                elseif ($TrimEndSeconds -gt 0 -and $TrimStartSeconds -gt 0) { 
-                    $TrimEndSeconds - $TrimStartSeconds 
-                }
-                else { 
-                    0 
-                }
+                $job.TrimStartSeconds = $trimParams.StartSeconds
+                $job.TrimDurationSeconds = $trimParams.DurationSeconds
                 
-                Write-Log "Параметры обрезки: Start=$($job.TrimStartSeconds)s, Duration=$($job.TrimDurationSeconds)s" -Severity Information -Category 'Main'
+                Write-Log "Параметры обрезки: Start=$($job.TrimStartSeconds)s, Duration=$($job.TrimDurationSeconds)s" `
+                    -Severity Information -Category 'Main'
                 
-                # 2. ОБРАБОТКА АУДИО (второй этап)
-                # Анализ аудиодорожек для рекомендаций
-                if (-not $global:Config.Encoding.Audio.CopyAudio) {
-                    $audioRecommendation = Get-AudioProcessingRecommendation -VideoPath $videoFileTmp.FullName
-                    if ($audioRecommendation) {
-                        Write-Log "Анализ аудио: $($audioRecommendation.TotalTracks) дорожек" -Severity Information -Category 'Audio'
-                        Write-Log "Из них Opus: $($audioRecommendation.OpusTracks)" -Severity Information -Category 'Audio'
-                        
-                        if ($audioRecommendation.RecommendedAction -eq 'extract_all') {
-                            Write-Log "Все дорожки уже в Opus - будет быстрое извлечение" -Severity Success -Category 'Audio'
-                        }
-                        elseif ($audioRecommendation.RecommendedAction -eq 'mixed') {
-                            Write-Log "Смешанный режим: извлечение Opus + перекодирование остальных" -Severity Information -Category 'Audio'
-                        }
-                    }
-                }
-
+                # 2. ОБРАБОТКА АУДИО
                 $audioMode = if ($global:Config.Encoding.Audio.CopyAudio) { "копирование" } else { "перекодирование в Opus" }
                 Write-Log "Этап 2/3: Обработка аудио ($audioMode)" -Severity Information -Category 'Main'
                 $job = ConvertTo-OpusAudio -Job $job
-
-                # 3. ОБРАБОТКА ВИДЕО (третий, самый долгий этап)
+                
+                # 3. ОБРАБОТКА ВИДЕО
                 Write-Log "Этап 3/3: Обработка видео" -Severity Information -Category 'Main'
-                $job = ConvertTo-Av1Video -Job $job -TemplatePath $TemplatePath -Debug
-
+                $job = ConvertTo-Av1Video -Job $job -TemplatePath $TemplatePath
+                
                 # ФИНАЛИЗАЦИЯ
                 Write-Log "Создание итогового файла" -Severity Information -Category 'Main'
                 Complete-MediaFile -Job $job
                 
                 $duration = [DateTime]::Now - $job.StartTime
-                Write-Log "Файл успешно обработан: $($job.FinalOutput) (Время: $($duration.ToString('hh\:mm\:ss')))" -Severity Success -Category 'Main'
-
-                <#
-                # Расчет VMAF
-                Write-Log "Расчёт VMAF..." -Severity Information -Category 'VMAF'
-                $gqmParams = @{
-                    DistortedPath = $job.FinalOutput
-                    ReferencePath = $job.ScriptFile
-                    TrimStartSeconds = $job.TrimStartSeconds
-                    DurationSeconds = $job.TrimDurationSeconds
-                    Metrics = 'VMAF'
-                    Subsample = 5
+                Write-Log "Файл успешно обработан: $($job.FinalOutput) (Время: $($duration.ToString('hh\:mm\:ss')))" `
+                    -Severity Success -Category 'Main'
+                
+                # Опционально: Расчет VMAF
+                if ($global:Config.Processing.CalculateVMAF -eq $true) {
+                    Measure-VideoQuality -Job $job
                 }
-                try {
-                    # $quality = Get-VideoQualityMetrics @gqmParams
-                    $job.Quality = $quality.VMAF
-                    Write-Log "VMAF: $($quality.VMAF)" -Severity Information -Category 'VMAF'
-                }
-                catch {
-                    $job.Quality = 0
-                    Write-Log "Ошибка при расчёте VMAF: $_" -Severity Error -Category 'VMAF'
-                }
-                #>
-
-                $NewFileName = [IO.Path]::ChangeExtension($job.FinalOutput, ("_[{0:0.00}].mkv" -f $quality.VMAF))
+                
                 # Сохранение настроек
-                ($job | ConvertTo-Json -Depth 10) | Out-File -LiteralPath "${NewFileName}.json" -Encoding UTF8
-
-                Rename-Item -LiteralPath $job.FinalOutput -NewName $NewFileName
-                $job.FinalOutput = $NewFileName
+                Save-EncodingSettings -Job $job
             }
             catch {
                 Write-Log "Ошибка при обработке $($videoFile.Name): $_" -Severity Error -Category 'Main'

@@ -82,7 +82,7 @@ function ConvertTo-Av1Video {
         if ($copyVideo) {
             # Ремуксинг без перекодирования
             Write-Log "Режим ремуксинга видео без перекодирования" -Severity Information -Category 'Video'
-            return Remux-VideoOnly -Job $Job
+            return Invoke-VideoOnlyRemux -Job $Job
         }
         
         # Определяем тип энкодера
@@ -391,7 +391,7 @@ function Invoke-VSPipeWithFFmpeg {
     }
 }
 
-function Remux-VideoOnly {
+function Invoke-VideoOnlyRemux {
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable]$Job)
     

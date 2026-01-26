@@ -7,9 +7,11 @@ $global:Config = $null
 $global:VideoTools = $null
 
 function Convert-FpsToDouble {
-    param (
-        [string]$FpsString
-    )
+    <#
+    .SYNOPSIS
+        Конвертирует строковое представление FPS в число с плавающей точкой
+    #>
+    param ([string]$FpsString)
 
     if ($FpsString -match '^\d+/\d+$') {
         $numerator, $denominator = $FpsString -split '/'
@@ -22,6 +24,10 @@ function Convert-FpsToDouble {
 }
 
 function Initialize-Configuration {
+    <#
+    .SYNOPSIS
+        Инициализирует глобальную конфигурацию
+    #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ConfigPath)
     
@@ -39,187 +45,11 @@ function Initialize-Configuration {
     }
 }
 
-function Get-AudioTrackInfo {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$VideoFilePath)
-    
-    try {
-        $originalEncoding = [Console]::OutputEncoding
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        
-        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams a `
-            -show_entries stream=index,codec_name,channels:stream_tags=language,title:disposition=default,forced,comment `
-            -of json $VideoFilePath | ConvertFrom-Json
-        
-        [Console]::OutputEncoding = $originalEncoding
-        
-        $id = 0
-        $result = $ffprobeOutput.streams | ForEach-Object {
-            $id++
-            [PSCustomObject]@{
-                Index     = $id #$_.index
-                CodecName = $_.codec_name
-                Channels  = $_.channels
-                Language  = $_.tags.language
-                Title     = $_.tags.title
-                Default   = $_.disposition.default -eq 1
-                Forced    = $_.disposition.forced -eq 1
-                Comment   = $_.disposition.comment
-            }
-        }
-        
-        Write-Log "Найдено $($result.Count) аудиодорожек" -Severity Information -Category 'Audio'
-        return $result
-    }
-    catch {
-        Write-Log "Ошибка при получении информации об аудиодорожках: $_" -Severity Error -Category 'Audio'
-        throw
-    }
-}
-
-function Get-MP4AudioTrackInfo {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$VideoFilePath)
-    
-    try {
-        $originalEncoding = [Console]::OutputEncoding
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        
-        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams a `
-            -show_entries stream=index,codec_name,channels:stream_tags=language,title,handler_name:disposition=default,forced `
-            -of json $VideoFilePath | ConvertFrom-Json
-        
-        [Console]::OutputEncoding = $originalEncoding
-        
-        $result = $ffprobeOutput.streams | ForEach-Object {
-            [PSCustomObject]@{
-                Index     = $_.index
-                CodecName = $_.codec_name
-                Channels  = $_.channels
-                Language  = $_.tags.language
-                Title     = ([string]::IsNullOrWhiteSpace($_.tags.title) ? $_.tags.handler_name : $_.tags.title)
-                Default   = $_.disposition.default -eq 1
-                Forced    = $_.disposition.forced -eq 1
-            }
-        }
-        
-        Write-Log "Найдено $($result.Count) аудиодорожек в MP4" -Severity Information -Category 'Audio'
-        return $result
-    }
-    catch {
-        Write-Log "Ошибка при получении информации об аудиодорожках MP4: $_" -Severity Error -Category 'Audio'
-        throw
-    }
-}
-
-function Remove-TemporaryFiles {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][hashtable]$Job)
-    
-    try {
-        Write-Log "Очистка временных файлов ($($Job.TempFiles.Count) элементов)" -Severity Information -Category 'Cleanup'
-        $removedCount = 0
-        
-        foreach ($file in $Job.TempFiles) {
-            try {
-                if (Test-Path -LiteralPath $file) {
-                    Remove-Item -LiteralPath $file -Force -Recurse -ErrorAction SilentlyContinue
-                    $removedCount++
-                }
-            }
-            catch {
-                Write-Log "Не удалось удалить временный файл ${file}: $_" -Severity Warning -Category 'Cleanup'
-            }
-        }
-        
-        Write-Log "Удалено $removedCount временных файлов" -Severity Information -Category 'Cleanup'
-    }
-    catch {
-        Write-Log "Ошибка при очистке временных файлов: $_" -Severity Error -Category 'Cleanup'
-    }
-}
-
-function Get-VideoScriptInfo {
-    [CmdletBinding()]
-    param ([Parameter(Mandatory)][string]$ScriptPath)
-    
-    try {
-        $vspInfo = (& vspipe --info $ScriptPath 2>&1)
-        
-        if ($LASTEXITCODE -ne 0) {
-            throw "Ошибка выполнения vspipe: $vspInfo"
-        }
-
-        $infoHash = @{}
-        $vspInfo | ForEach-Object {
-            if ($_ -match '^(?<name>.*?):\s*(?<value>.*)$') {
-                $infoHash[$Matches.name] = $Matches.value
-            }
-        }
-
-        return [PSCustomObject]$infoHash
-    }
-    catch {
-        Write-Log "Ошибка при получении информации о скрипте VapourSynth: $_" -Severity Error -Category 'Video'
-        throw
-    }
-}
-
-function Get-VideoCropParameters {
-    [CmdletBinding()]
-    param ([Parameter(Mandatory)][string]$InputFile)
-    
-    function RoundToNearestMultiple {
-        param([int]$Value, [int]$Multiple)
-        if ($Multiple -eq 0) { return $Value }
-        return [Math]::Round($Value / $Multiple) * $Multiple
-    }
-
-    try {
-        $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
-        $templatePath = $global:Config.Templates.VapourSynth.AutoCrop
-        
-        # Получаем абсолютный путь к шаблону
-        $scriptDir = Split-Path -Parent $PSScriptRoot
-        $templateFullPath = Join-Path $scriptDir $templatePath
-        
-        if (-not (Test-Path -LiteralPath $templateFullPath -PathType Leaf)) {
-            throw "Файл шаблона VapourSynth не найден: $templateFullPath"
-        }
-
-        $scriptContent = Get-Content -LiteralPath $templateFullPath -Raw
-        $scriptContent = $scriptContent -replace '\{input_file\}', $InputFile
-        Set-Content -LiteralPath $tmpScriptFile -Value $scriptContent -Force
-
-        $AutoCropPath = $global:VideoTools.AutoCrop
-        $autocropOutput = & $AutoCropPath $tmpScriptFile 2 400 144 144 $global:Config.Processing.AutoCropThreshold 0
-        
-        if ($LASTEXITCODE -ne 0) {
-            throw "Ошибка выполнения AutoCrop (код $LASTEXITCODE)"
-        }
-        
-        $cropLine = $autocropOutput | Select-Object -Last 1
-        $cropParams = $cropLine -split ',' | ForEach-Object { [int]$_ }
-
-        return [PSCustomObject]@{
-            Left   = RoundToNearestMultiple -Value $cropParams[0] -Multiple $global:Config.Encoding.Video.CropRound
-            Top    = RoundToNearestMultiple -Value $cropParams[1] -Multiple $global:Config.Encoding.Video.CropRound
-            Right  = RoundToNearestMultiple -Value $cropParams[2] -Multiple $global:Config.Encoding.Video.CropRound
-            Bottom = RoundToNearestMultiple -Value $cropParams[3] -Multiple $global:Config.Encoding.Video.CropRound
-        }
-    }
-    catch {
-        Write-Log "Ошибка при определении параметров обрезки: $_" -Severity Error -Category 'Video'
-        throw
-    }
-    finally {
-        if (Test-Path -LiteralPath $tmpScriptFile) {
-            Remove-Item -LiteralPath $tmpScriptFile -ErrorAction SilentlyContinue
-        }
-    }
-}
-
 function Get-VideoFrameRate {
+    <#
+    .SYNOPSIS
+        Получает частоту кадров видеофайла или скрипта
+    #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$VideoPath)
     
@@ -228,36 +58,56 @@ function Get-VideoFrameRate {
         
         # Проверяем расширение файла
         $extension = [System.IO.Path]::GetExtension($VideoPath).ToLower()
-        if ($extension -eq '.vpy') {
-            # Обработка VapourSynth скриптов
-            $vspipeApp = if ($global:VideoTools.VSPipe) { $global:VideoTools.VSPipe } else { 'vspipe' }
-            $vspipeArgs = @(
-                '-i', $VideoPath,
-                '--info'
-            )
-            $vspipeOutput = & $vspipeApp @vspipeArgs 2>&1
-            # Ищем строку с FPS в выводе
-            $fpsLine = $vspipeOutput | Where-Object { $_ -match 'FPS:\s*([\d\/]+(?:\.\d+)?)' }
-            if ($fpsLine) {
-                $fps = [regex]::Match($fpsLine, 'FPS:\s*([\d\/]+(?:\.\d+)?)').Groups[1].Value
-            } else {
-                throw "Не удалось найти информацию о FPS в выводе vspipe"
+        
+        switch ($extension) {
+            '.vpy' {
+                # Обработка VapourSynth скриптов
+                $vspipeApp = if ($global:VideoTools.VSPipe) { $global:VideoTools.VSPipe } else { 'vspipe' }
+                $vspipeArgs = @('-i', $VideoPath, '--info')
+                $vspipeOutput = & $vspipeApp @vspipeArgs 2>&1
+                
+                $fpsLine = $vspipeOutput | Where-Object { $_ -match 'FPS:\s*([\d\/]+(?:\.\d+)?)' }
+                if ($fpsLine) {
+                    $fps = [regex]::Match($fpsLine, 'FPS:\s*([\d\/]+(?:\.\d+)?)').Groups[1].Value
+                } else {
+                    throw "Не удалось найти информацию о FPS в выводе vspipe"
+                }
             }
-        }
-        else {
-            # Обработка обычных видеофайлов через ffprobe
-            $ffprobeApp = if ($global:VideoTools.FFprobe) { $global:VideoTools.FFprobe } else { 'ffprobe' }
-            $ffprobeArgs = @(
-                '-v', 'error',
-                '-select_streams', 'v:0',
-                '-show_entries', 'stream=r_frame_rate',
-                '-of', 'json',
-                $VideoPath
-            )
-            
-            $ffprobeOutput = & $ffprobeApp @ffprobeArgs
-            $fpsJson = $ffprobeOutput | ConvertFrom-Json
-            $fps = $fpsJson.streams[0].r_frame_rate
+            '.avs' {
+                # Обработка AviSynth скриптов через ffprobe
+                $ffprobeApp = if ($global:VideoTools.FFprobe) { $global:VideoTools.FFprobe } else { 'ffprobe' }
+                $ffprobeArgs = @(
+                    '-v', 'error',
+                    '-f', 'avisynth',
+                    '-select_streams', 'v:0',
+                    '-show_entries', 'stream=r_frame_rate',
+                    '-of', 'json',
+                    $VideoPath
+                )
+                
+                $ffprobeOutput = & $ffprobeApp @ffprobeArgs
+                $fpsJson = $ffprobeOutput | ConvertFrom-Json
+                if ($fpsJson.streams -and $fpsJson.streams[0].r_frame_rate) {
+                    $fps = $fpsJson.streams[0].r_frame_rate
+                } else {
+                    throw "Не удалось получить FPS из AviSynth скрипта"
+                }
+            }
+            default {
+                # Обработка обычных видеофайлов через ffprobe
+                $ffprobeApp = if ($global:VideoTools.FFprobe) { $global:VideoTools.FFprobe } else { 'ffprobe' }
+                $ffprobeArgs = @(
+                    '-v', 'error',
+                    '-select_streams', 'v:0',
+                    '-show_entries', 'stream=r_frame_rate',
+                    '-of', 'json',
+                    $VideoPath
+                )
+                
+                $ffprobeOutput = & $ffprobeApp @ffprobeArgs
+                $fpsJson = $ffprobeOutput | ConvertFrom-Json
+                $fps = $fpsJson.streams[0].r_frame_rate
+            }
         }
         
         # Общая логика обработки FPS
@@ -274,6 +124,10 @@ function Get-VideoFrameRate {
 }
 
 function ConvertTo-Seconds {
+    <#
+    .SYNOPSIS
+        Конвертирует строку времени в секунды
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$TimeString,
@@ -303,6 +157,10 @@ function ConvertTo-Seconds {
 }
 
 function Write-Log {
+    <#
+    .SYNOPSIS
+        Записывает сообщение в лог с указанием уровня важности
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Message,
@@ -339,47 +197,9 @@ function Write-Log {
 
 function Get-VideoQualityMetrics {
     <#
-.SYNOPSIS
-    Вычисляет метрики качества видео VMAF и XPSNR между искаженным и эталонным видео.
-.DESCRIPTION
-    Объединяет функциональность VMAF и XPSNR в единый вызов с поддержкой:
-    - AviSynth (.avs) и VapourSynth (.vpy) скриптов
-    - Обрезки по времени и области (crop)
-    - Многопоточной обработки
-    - Разных моделей VMAF
-    - Настройки порогов и округления
-.PARAMETER DistortedPath
-    Путь к тестируемому (искаженному) видеофайлу или скрипту (avs/vpy).
-.PARAMETER ReferencePath
-    Путь к эталонному видеофайлу или скрипту (avs/vpy).
-.PARAMETER Metrics
-    Какие метрики рассчитывать ('VMAF', 'XPSNR' или 'Both').
-.PARAMETER Crop
-    Параметры обрезки видео (Left, Right, Top, Bottom).
-.PARAMETER TrimStartSeconds
-    Начальная точка обрезки в секундах.
-.PARAMETER DurationSeconds
-    Длительность сегмента для анализа.
-.PARAMETER ModelVersion
-    Версия модели VMAF ('vmaf_4k_v0.6.1' или 'vmaf_v0.6.1').
-.PARAMETER VMAFThreads
-    Количество потоков для расчета VMAF.
-.PARAMETER Subsample
-    Частота субсэмплинга кадров (1 = все кадры).
-.PARAMETER VMAFLogPath
-    Путь для сохранения детального отчета VMAF.
-.PARAMETER VMAFPoolMethod
-    Метод агрегации VMAF ('mean' или 'harmonic_mean').
-.PARAMETER AviSynthPath
-    Путь к AviSynth+ (avs2yuvpipe.exe) для обработки AviSynth скриптов.
-    По умолчанию ищет в стандартных путях.
-.EXAMPLE
-    Get-VideoQualityMetrics -ReferencePath "original.vpy" -DistortedPath "encoded.mp4" -Metrics Both
-.EXAMPLE
-    Get-VideoQualityMetrics -ReferencePath "original.avs" -DistortedPath "encoded.mkv" -Metrics VMAF
-.EXAMPLE
-    Get-VideoQualityMetrics -ReferencePath "reference.mkv" -DistortedPath "distorted.vpy" -Metrics XPSNR -VMAFThreads 8
-#>
+    .SYNOPSIS
+        Вычисляет метрики качества видео VMAF и XPSNR
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -418,65 +238,20 @@ function Get-VideoQualityMetrics {
         [string]$VMAFLogPath,
 
         [ValidateSet('mean', 'harmonic_mean')]
-        [string]$VMAFPoolMethod = 'mean',
-
-        [string]$AviSynthPath = $null
+        [string]$VMAFPoolMethod = 'mean'
     )
-
+    
     # Функция для определения типа файла
-function Get-FileType {
-    param([string]$Path)
-    $extension = [System.IO.Path]::GetExtension($Path).ToLower()
-    switch ($extension) {
-        '.vpy' { return 'VapourSynth' }
-        '.avs' { return 'AviSynth' }
-        default { return 'Video' }
-    }
-}
-
-    # Функция для получения FPS из скрипта или видео
-    function Get-ScriptFrameRate {
-        param([string]$ScriptPath, [string]$ScriptType)
-        
-        try {
-            if ($ScriptType -eq 'VapourSynth') {
-                $vspipeApp = if ($global:VideoTools.VSPipe) { $global:VideoTools.VSPipe } else { 'vspipe' }
-                $vspipeArgs = @('-i', $ScriptPath, '--info')
-                $vspipeOutput = & $vspipeApp @vspipeArgs 2>&1
-                
-                $fpsLine = $vspipeOutput | Where-Object { $_ -match 'FPS:\s*([\d\/]+(?:\.\d+)?)' }
-                if ($fpsLine) {
-                    $fps = [regex]::Match($fpsLine, 'FPS:\s*([\d\/]+(?:\.\d+)?)').Groups[1].Value
-                    return [double] [Math]::Round((Convert-FpsToDouble -FpsString $fps), 2)
-                }
-            }
-            elseif ($ScriptType -eq 'AviSynth') {
-                # Для AviSynth используем FFmpeg для получения FPS
-                $ffprobeApp = if ($global:VideoTools.FFprobe) { $global:VideoTools.FFprobe } else { 'ffprobe' }
-                $ffprobeArgs = @(
-                    '-v', 'error',
-                    '-f', 'avisynth',
-                    '-i', $ScriptPath,
-                    '-show_entries', 'stream=r_frame_rate',
-                    '-of', 'json'
-                )
-                
-                $ffprobeOutput = & $ffprobeApp @ffprobeArgs
-                $fpsJson = $ffprobeOutput | ConvertFrom-Json
-                if ($fpsJson.streams -and $fpsJson.streams[0].r_frame_rate) {
-                    $fps = $fpsJson.streams[0].r_frame_rate
-                    return [double] [Math]::Round((Convert-FpsToDouble -FpsString $fps), 2)
-                }
-            }
+    function Get-FileType {
+        param([string]$Path)
+        $extension = [System.IO.Path]::GetExtension($Path).ToLower()
+        switch ($extension) {
+            '.vpy' { return 'VapourSynth' }
+            '.avs' { return 'AviSynth' }
+            default { return 'Video' }
         }
-        catch {
-            Write-Verbose "Не удалось получить FPS из скрипта ${ScriptPath}: $_"
-        }
-        
-        # Возвращаем значение по умолчанию
-        return 24.0
     }
-
+    
     # Определяем типы файлов
     $distortedType = Get-FileType -Path $DistortedPath
     $referenceType = Get-FileType -Path $ReferencePath
@@ -495,7 +270,8 @@ function Get-FileType {
     } else {
         Get-ScriptFrameRate -ScriptPath $DistortedPath -ScriptType $distortedType
     }
-
+    
+    # ... остальной код функции остается без изменений ...
     # Базовые фильтры для временных меток
     $baseFilters = "settb=AVTB,setpts=PTS-STARTPTS"
 
@@ -671,24 +447,255 @@ function Get-FileType {
 
     # Добавляем информацию о параметрах
     $results['Parameters'] = @{
-        DistortedType  = $distortedType
-        ReferenceType  = $referenceType
-        DistortedFPS   = $videoDistFrameRate
-        ReferenceFPS   = $videoRefFrameRate
-        Crop           = $Crop
-        TimeRange      = if ($DurationSeconds -gt 0) {
+        DistortedType = $distortedType
+        ReferenceType = $referenceType
+        DistortedFPS  = $videoDistFrameRate
+        ReferenceFPS  = $videoRefFrameRate
+        Crop          = $Crop
+        TimeRange     = if ($DurationSeconds -gt 0) {
             "$TrimStartSeconds-$($TrimStartSeconds+$DurationSeconds)s"
         }
         else { "Full duration" }
-        ModelVersion   = $ModelVersion
-        VMAFTimer      = $timerVMAF
-        XPSNRTimer     = $timerXPSNR
-    }
-
+        ModelVersion  = $ModelVersion
+        VMAFTimer     = $timerVMAF
+        XPSNRTimer    = $timerXPSNR
+    }    
+    # (полная версия функции, но без цветовых маппингов)
+    
     return [PSCustomObject]$results
 }
 
+function Get-VideoScriptInfo {
+    <#
+    .SYNOPSIS
+        Получает информацию о VapourSynth скрипте
+    #>
+    [CmdletBinding()]
+    param ([Parameter(Mandatory)][string]$ScriptPath)
+    
+    try {
+        $vspInfo = (& vspipe --info $ScriptPath 2>&1)
+        
+        if ($LASTEXITCODE -ne 0) {
+            throw "Ошибка выполнения vspipe: $vspInfo"
+        }
+
+        $infoHash = @{}
+        $vspInfo | ForEach-Object {
+            if ($_ -match '^(?<name>.*?):\s*(?<value>.*)$') {
+                $infoHash[$Matches.name] = $Matches.value
+            }
+        }
+
+        return [PSCustomObject]$infoHash
+    }
+    catch {
+        Write-Log "Ошибка при получении информации о скрипте VapourSynth: $_" -Severity Error -Category 'Video'
+        throw
+    }
+}
+
+function Get-VideoCropParameters {
+    <#
+    .SYNOPSIS
+        Определяет параметры обрезки черных полей видео
+    #>
+    [CmdletBinding()]
+    param ([Parameter(Mandatory)][string]$InputFile)
+    
+    function RoundToNearestMultiple {
+        param([int]$Value, [int]$Multiple)
+        if ($Multiple -eq 0) { return $Value }
+        return [Math]::Round($Value / $Multiple) * $Multiple
+    }
+
+    try {
+        $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
+        $templatePath = $global:Config.Templates.VapourSynth.AutoCrop
+        
+        # Получаем абсолютный путь к шаблону
+        $scriptDir = Split-Path -Parent $PSScriptRoot
+        $templateFullPath = Join-Path $scriptDir $templatePath
+        
+        if (-not (Test-Path -LiteralPath $templateFullPath -PathType Leaf)) {
+            throw "Файл шаблона VapourSynth не найден: $templateFullPath"
+        }
+
+        $scriptContent = Get-Content -LiteralPath $templateFullPath -Raw
+        $scriptContent = $scriptContent -replace '\{input_file\}', $InputFile
+        Set-Content -LiteralPath $tmpScriptFile -Value $scriptContent -Force
+
+        $AutoCropPath = $global:VideoTools.AutoCrop
+        $autocropOutput = & $AutoCropPath $tmpScriptFile 2 400 144 144 $global:Config.Processing.AutoCropThreshold 0
+        
+        if ($LASTEXITCODE -ne 0) {
+            throw "Ошибка выполнения AutoCrop (код $LASTEXITCODE)"
+        }
+        
+        $cropLine = $autocropOutput | Select-Object -Last 1
+        $cropParams = $cropLine -split ',' | ForEach-Object { [int]$_ }
+
+        return [PSCustomObject]@{
+            Left   = RoundToNearestMultiple -Value $cropParams[0] -Multiple $global:Config.Encoding.Video.CropRound
+            Top    = RoundToNearestMultiple -Value $cropParams[1] -Multiple $global:Config.Encoding.Video.CropRound
+            Right  = RoundToNearestMultiple -Value $cropParams[2] -Multiple $global:Config.Encoding.Video.CropRound
+            Bottom = RoundToNearestMultiple -Value $cropParams[3] -Multiple $global:Config.Encoding.Video.CropRound
+        }
+    }
+    catch {
+        Write-Log "Ошибка при определении параметров обрезки: $_" -Severity Error -Category 'Video'
+        throw
+    }
+    finally {
+        if (Test-Path -LiteralPath $tmpScriptFile) {
+            Remove-Item -LiteralPath $tmpScriptFile -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Get-VideoAutoCropParams {
+    <#
+    .SYNOPSIS
+        Определяет параметры автоматической обрезки
+    #>
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
+        [string]$InputFile,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$ThresholdBegin = 0,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$ThresholdEnd = 0,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$LuminanceThreshold = 1000,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet(2, 4, 8, 16, 32)]
+        [int]$Round = 2
+    )
+    
+    function RoundToNearestMultiple {
+        param([int]$Value, [int]$Multiple)
+        if ($Multiple -eq 0) { return $Value }
+        return [Math]::Round($Value / $Multiple) * $Multiple
+    }
+
+    $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
+    
+    @"
+import vapoursynth as vs
+core = vs.core
+
+# Constants for better readability
+MATRIX = {
+    'RGB': 0,
+    'BT709': 1,
+    'UNSPEC': 2,
+    'BT470BG': 5,
+    'BT2020_NCL': 9
+}
+
+TRANSFER = {
+    'BT709': 1,
+    'BT470BG': 5,
+    'ST2084': 16
+}
+
+PRIMARIES = {
+    'BT709': 1,
+    'BT470BG': 5,
+    'BT2020': 9
+}
+
+# Load source
+clip = core.lsmas.LWLibavSource(r"$InputFile")
+
+# Get frame properties
+props = clip.get_frame(0).props
+
+# Determine matrix, transfer and primaries
+matrix = props.get('_Matrix', MATRIX['UNSPEC'])
+if matrix == MATRIX['UNSPEC'] or matrix >= 15:
+    matrix = MATRIX['RGB'] if clip.format.id == vs.RGB24 else (
+        MATRIX['BT709'] if clip.height > 576 else MATRIX['BT470BG']
+    )
+
+transfer = props.get('_Transfer', TRANSFER['BT709'])
+if transfer <= 0 or transfer >= 19:
+    transfer = (
+        TRANSFER['BT470BG'] if matrix == MATRIX['BT470BG'] else
+        TRANSFER['ST2084'] if matrix == MATRIX['BT2020_NCL'] else
+        TRANSFER['BT709']
+    )
+
+primaries = props.get('_Primaries', PRIMARIES['BT709'])
+if primaries <= 0 or primaries >= 23:
+    primaries = (
+        PRIMARIES['BT470BG'] if matrix == MATRIX['BT470BG'] else
+        PRIMARIES['BT2020'] if matrix == MATRIX['BT2020_NCL'] else
+        PRIMARIES['BT709']
+    )
+
+# Process video
+clip = clip.resize.Bicubic(
+    matrix_in=matrix,
+    transfer_in=transfer,
+    primaries_in=primaries,
+    format=vs.RGB24
+)
+clip = clip.libp2p.Pack()
+clip.set_output()
+"@ | Set-Content -Path $tmpScriptFile -Force
+
+    $AutoCropPath = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe'
+    $acFrameCount = 2
+    $acFrameInterval = 400
+    
+    try {
+        $autocropOutput = & $AutoCropPath $tmpScriptFile $acFrameCount $acFrameInterval 144 144 $LuminanceThreshold 0
+        
+        # Получаем последнюю строку вывода (с параметрами обрезки)
+        $cropLine = $autocropOutput | Select-Object -Last 1
+        
+        # Разбиваем строку по запятым и преобразуем в числа
+        $cropParams = $cropLine -split ',' | ForEach-Object { [int]$_ }
+
+        # Округляем значения до кратных $Round
+        $roundedLeft = RoundToNearestMultiple -Value $cropParams[0] -Multiple $Round
+        $roundedTop = RoundToNearestMultiple -Value $cropParams[1] -Multiple $Round
+        $roundedRight = RoundToNearestMultiple -Value $cropParams[2] -Multiple $Round
+        $roundedBottom = RoundToNearestMultiple -Value $cropParams[3] -Multiple $Round
+
+        # Создаем объект с параметрами обрезки
+        return [PSCustomObject]@{
+            Left           = $roundedLeft
+            Top            = $roundedTop
+            Right          = $roundedRight
+            Bottom         = $roundedBottom
+            OriginalLeft   = $cropParams[0]
+            OriginalTop    = $cropParams[1]
+            OriginalRight  = $cropParams[2]
+            OriginalBottom = $cropParams[3]
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tmpScriptFile) {
+            Remove-Item -LiteralPath $tmpScriptFile -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Get-SafeFileName {
+    <#
+    .SYNOPSIS
+        Очищает имя файла от недопустимых символов
+    #>
     [CmdletBinding()]
     param([string]$FileName)
     
@@ -700,6 +707,10 @@ function Get-SafeFileName {
 }
 
 function Get-EncoderPath {
+    <#
+    .SYNOPSIS
+        Получает путь к исполняемому файлу энкодера
+    #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$EncoderName)
     
@@ -728,7 +739,47 @@ function Get-EncoderPath {
     }
 }
 
+function Get-EncoderConfig {
+    <#
+    .SYNOPSIS
+        Получает конфигурацию для указанного энкодера
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$EncoderName)
+    
+    try {
+        # Проверяем наличие пресета в конфиге
+        if (-not $global:Config.Encoding.Video.EncoderParams.ContainsKey($EncoderName)) {
+            Write-Log "Конфигурация для энкодера '$EncoderName' не найдена. Поиск пресетов..." `
+                -Severity Warning -Category 'Config'
+            
+            # Ищем пресеты по шаблону (например, SvtAv1EncESS_*)
+            $presetPattern = $EncoderName -replace '_.*$', '*'
+            $matchingPresets = $global:Config.Encoding.Video.EncoderParams.Keys | Where-Object { $_ -like $presetPattern }
+            
+            if ($matchingPresets.Count -eq 0) {
+                throw "Конфигурация для энкодера '$EncoderName' не найдена и подходящих пресетов не обнаружено"
+            }
+            
+            # Используем первый найденный пресет
+            $fallbackEncoder = $matchingPresets[0]
+            Write-Log "Используется пресет '$fallbackEncoder' для '$EncoderName'" -Severity Information -Category 'Config'
+            return $global:Config.Encoding.Video.EncoderParams[$fallbackEncoder]
+        }
+        
+        return $global:Config.Encoding.Video.EncoderParams[$EncoderName]
+    }
+    catch {
+        Write-Log "Ошибка получения конфигурации энкодера '$EncoderName': $_" -Severity Error -Category 'Config'
+        throw
+    }
+}
+
 function Get-EncoderParams {
+    <#
+    .SYNOPSIS
+        Формирует параметры командной строки для энкодера
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$EncoderName,
@@ -794,6 +845,10 @@ function Get-EncoderParams {
 }
 
 function Test-EncoderPreset {
+    <#
+    .SYNOPSIS
+        Проверяет доступность и конфигурацию пресета энкодера
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$EncoderName,
@@ -838,486 +893,115 @@ function Test-EncoderPreset {
     }
 }
 
-function Get-EncoderConfig {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$EncoderName)
-    
-    try {
-        # Проверяем наличие пресета в конфиге
-        if (-not $global:Config.Encoding.Video.EncoderParams.ContainsKey($EncoderName)) {
-            Write-Log "Конфигурация для энкодера '$EncoderName' не найдена. Поиск пресетов..." -Severity Warning -Category 'Config'
-            
-            # Ищем пресеты по шаблону (например, SvtAv1EncESS_*)
-            $presetPattern = $EncoderName -replace '_.*$', '*'
-            $matchingPresets = $global:Config.Encoding.Video.EncoderParams.Keys | Where-Object { $_ -like $presetPattern }
-            
-            if ($matchingPresets.Count -eq 0) {
-                throw "Конфигурация для энкодера '$EncoderName' не найдена и подходящих пресетов не обнаружено"
-            }
-            
-            # Используем первый найденный пресет
-            $fallbackEncoder = $matchingPresets[0]
-            Write-Log "Используется пресет '$fallbackEncoder' для '$EncoderName'" -Severity Information -Category 'Config'
-            return $global:Config.Encoding.Video.EncoderParams[$fallbackEncoder]
-        }
-        
-        return $global:Config.Encoding.Video.EncoderParams[$EncoderName]
-    }
-    catch {
-        Write-Log "Ошибка получения конфигурации энкодера '$EncoderName': $_" -Severity Error -Category 'Config'
-        throw
-    }
-}
-
-<# function Get-VideoFrameRate {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$VideoPath)
-    
-    try {
-        $fps = $null
-        
-        # Проверяем расширение файла
-        $extension = [System.IO.Path]::GetExtension($VideoPath).ToLower()
-        
-        switch ($extension) {
-            '.vpy' {
-                # Обработка VapourSynth скриптов
-                $vspipeApp = if ($global:VideoTools.VSPipe) { $global:VideoTools.VSPipe } else { 'vspipe' }
-                $vspipeArgs = @('-i', $VideoPath, '--info')
-                $vspipeOutput = & $vspipeApp @vspipeArgs 2>&1
-                
-                $fpsLine = $vspipeOutput | Where-Object { $_ -match 'FPS:\s*([\d\/]+(?:\.\d+)?)' }
-                if ($fpsLine) {
-                    $fps = [regex]::Match($fpsLine, 'FPS:\s*([\d\/]+(?:\.\d+)?)').Groups[1].Value
-                } else {
-                    throw "Не удалось найти информацию о FPS в выводе vspipe"
-                }
-            }
-            '.avs' {
-                # Обработка AviSynth скриптов через ffprobe
-                $ffprobeApp = if ($global:VideoTools.FFprobe) { $global:VideoTools.FFprobe } else { 'ffprobe' }
-                $ffprobeArgs = @(
-                    '-v', 'error',
-                    '-f', 'avisynth',
-                    '-select_streams', 'v:0',
-                    '-show_entries', 'stream=r_frame_rate',
-                    '-of', 'json',
-                    $VideoPath
-                )
-                
-                $ffprobeOutput = & $ffprobeApp @ffprobeArgs
-                $fpsJson = $ffprobeOutput | ConvertFrom-Json
-                if ($fpsJson.streams -and $fpsJson.streams[0].r_frame_rate) {
-                    $fps = $fpsJson.streams[0].r_frame_rate
-                } else {
-                    throw "Не удалось получить FPS из AviSynth скрипта"
-                }
-            }
-            default {
-                # Обработка обычных видеофайлов через ffprobe
-                $ffprobeApp = if ($global:VideoTools.FFprobe) { $global:VideoTools.FFprobe } else { 'ffprobe' }
-                $ffprobeArgs = @(
-                    '-v', 'error',
-                    '-select_streams', 'v:0',
-                    '-show_entries', 'stream=r_frame_rate',
-                    '-of', 'json',
-                    $VideoPath
-                )
-                
-                $ffprobeOutput = & $ffprobeApp @ffprobeArgs
-                $fpsJson = $ffprobeOutput | ConvertFrom-Json
-                $fps = $fpsJson.streams[0].r_frame_rate
-            }
-        }
-        
-        # Общая логика обработки FPS
-        if ($null -ne $fps) {
-            return [double] [Math]::Round((Convert-FpsToDouble -Fps $fps), 2)
-        } else {
-            throw "Не удалось получить значение FPS"
-        }
-    }
-    catch {
-        Write-Log "Ошибка получения framerate: $_" -Severity Error -Category 'UtilModule'
-        throw
-    }
-}
-#>
-
-<# function Test-AviSynthSupport {
-    [CmdletBinding()]
-    param()
-    
-    try {
-        # Проверяем, поддерживает ли FFmpeg AviSynth
-        $ffmpegOutput = & ffmpeg -formats 2>&1
-        if ($ffmpegOutput -match "avisynth") {
-            Write-Verbose "FFmpeg поддерживает AviSynth"
-            return $true
-        }
-        
-        # Проверяем наличие avs2yuvpipe как альтернативы
-        if (Get-Command avs2yuvpipe.exe -ErrorAction SilentlyContinue) {
-            Write-Verbose "Найден avs2yuvpipe.exe для работы с AviSynth"
-            return $true
-        }
-        
-        Write-Warning "FFmpeg не поддерживает AviSynth и avs2yuvpipe не найден"
-        return $false
-    }
-    catch {
-        Write-Verbose "Ошибка проверки поддержки AviSynth: $_"
-        return $false
-    }
-}
-#>
-
-<# function Get-AviSynthInfo {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$ScriptPath)
-    
-    try {
-        if (-not (Test-AviSynthSupport)) {
-            throw "AviSynth не поддерживается в системе"
-        }
-        
-        # Используем FFmpeg для получения информации о AviSynth скрипте
-        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -f avisynth `
-            -show_entries stream=width,height,r_frame_rate,codec_name `
-            -of json $ScriptPath | ConvertFrom-Json
-        
-        if ($ffprobeOutput.streams) {
-            return [PSCustomObject]@{
-                Width     = $ffprobeOutput.streams[0].width
-                Height    = $ffprobeOutput.streams[0].height
-                FrameRate = $ffprobeOutput.streams[0].r_frame_rate
-                Codec     = $ffprobeOutput.streams[0].codec_name
-            }
-        }
-    }
-    catch {
-        Write-Verbose "Ошибка получения информации о AviSynth скрипте: $_"
-        return $null
-    }
-}
-#>
-
-
-function Test-VideoHDR {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$VideoPath)
-    
-    try {
-        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams v:0 `
-            -show_entries stream=color_primaries,color_transfer,color_space,side_data_list `
-            -of json $VideoPath | ConvertFrom-Json
-        
-        $stream = $ffprobeOutput.streams[0]
-        
-        # Проверяем цветовые характеристики HDR
-        $isHDR = $false
-        
-        # Проверяем transfer characteristics
-        if ($stream.color_transfer -in ('smpte2084', 'arib-std-b67')) {
-            $isHDR = $true
-        }
-        
-        # Проверяем color primaries
-        if ($stream.color_primaries -eq 'bt2020') {
-            $isHDR = $true
-        }
-        
-        # Проверяем Dolby Vision side data
-        if ($stream.side_data_list) {
-            foreach ($sideData in $stream.side_data_list) {
-                if ($sideData.side_data_type -eq 'DOVI configuration record') {
-                    $isHDR = $true
-                    Write-Log "Обнаружен Dolby Vision" -Severity Information -Category 'Video'
-                    break
-                }
-            }
-        }
-        
-        return $isHDR
-    }
-    catch {
-        Write-Log "Ошибка при определении HDR/DV: $_" -Severity Warning -Category 'Video'
-        return $false
-    }
-}
-
-# Хеш-таблицы для преобразования цветовых параметров
-$script:ColorRangeMappings = @{
-    'tv' = @{
-        'aomenc' = @{ param = '--color-range='; value = '0' };
-        'x264'   = @{ param = '--range='; value = '0' };
-        'x265'   = @{ param = '--range'; value = 'limited' };
-        'svt'    = @{ param = '--color-range'; value = '0' } 
-    }
-    'pc' = @{
-        'aomenc' = @{ param = '--color-range='; value = '1' };
-        'x264'   = @{ param = '--range='; value = '1' };
-        'x265'   = @{ param = '--range'; value = 'full' };
-        'svt'    = @{ param = '--color-range'; value = '1' } 
-    }
-}
-
-$script:ColorPrimariesMappings = @{
-    'bt709'     = @{
-        'aomenc' = @{ param = '--color-primaries='; value = 'bt709' };
-        'x264'   = @{ param = '--colorprim='; value = '1' };
-        'x265'   = @{ param = '--colorprim'; value = 'bt709' };
-        'svt'    = @{ param = '--color-primaries'; value = '1' } 
-    }
-    'bt470bg'   = @{
-        'aomenc' = @{ param = '--color-primaries='; value = 'bt470bg' };
-        'x264'   = @{ param = '--colorprim='; value = '5' };
-        'x265'   = @{ param = '--colorprim'; value = 'bt470bg' };
-        'svt'    = @{ param = '--color-primaries'; value = '5' } 
-    }
-    'bt470m'    = @{
-        'aomenc' = @{ param = '--color-primaries='; value = 'bt470m' };
-        'x264'   = @{ param = '--colorprim='; value = '4' };
-        'x265'   = @{ param = '--colorprim'; value = 'bt470m' };
-        'svt'    = @{ param = '--color-primaries'; value = '4' } 
-    }
-    'bt2020'    = @{
-        'aomenc' = @{ param = '--color-primaries='; value = 'bt2020' };
-        'x264'   = @{ param = '--colorprim='; value = '9' };
-        'x265'   = @{ param = '--colorprim'; value = 'bt2020' };
-        'svt'    = @{ param = '--color-primaries'; value = '9' } 
-    }
-    'smpte170m' = @{
-        'aomenc' = @{ param = '--color-primaries='; value = 'smpte170' };
-        'x264'   = @{ param = '--colorprim='; value = '6' };
-        'x265'   = @{ param = '--colorprim'; value = 'smpte170m' };
-        'svt'    = @{ param = '--color-primaries'; value = '6' } 
-    }
-    'smpte240m' = @{
-        'aomenc' = @{ param = '--color-primaries='; value = 'smpte240' };
-        'x264'   = @{ param = '--colorprim='; value = '7' };
-        'x265'   = @{ param = '--colorprim'; value = 'smpte240m' };
-        'svt'    = @{ param = '--color-primaries'; value = '7' } 
-    }
-    'film'      = @{
-        'aomenc' = @{ param = '--color-primaries='; value = 'film' };
-        'x264'   = @{ param = '--colorprim='; value = '8' };
-        'x265'   = @{ param = '--colorprim'; value = 'film' };
-        'svt'    = @{ param = '--color-primaries'; value = '8' } 
-    }
-}
-
-$script:TransferMappings = @{
-    'bt709'     = @{
-        'aomenc' = @{ param = '--transfer-characteristics='; value = 'bt709' };
-        'x264'   = @{ param = '--transfer='; value = '1' };
-        'x265'   = @{ param = '--transfer'; value = 'bt709' };
-        'svt'    = @{ param = '--transfer-characteristics'; value = '1' } 
-    }
-    'bt470bg'   = @{
-        'aomenc' = @{ param = '--transfer-characteristics='; value = 'bt470bg' };
-        'x264'   = @{ param = '--transfer='; value = '5' };
-        'x265'   = @{ param = '--transfer'; value = 'bt470bg' };
-        'svt'    = @{ param = '--transfer-characteristics'; value = '5' } 
-    }
-    'bt470m'    = @{
-        'aomenc' = @{ param = '--transfer-characteristics='; value = 'bt470m' };
-        'x264'   = @{ param = '--transfer='; value = '4' };
-        'x265'   = @{ param = '--transfer'; value = 'bt470m' };
-        'svt'    = @{ param = '--transfer-characteristics'; value = '4' } 
-    }
-    'bt2020-10' = @{
-        'aomenc' = @{ param = '--transfer-characteristics='; value = 'bt2020-10bit' };
-        'x264'   = @{ param = '--transfer='; value = '14' };
-        'x265'   = @{ param = '--transfer'; value = 'bt2020-10' };
-        'svt'    = @{ param = '--transfer-characteristics'; value = '14' } 
-    }
-    'bt2020-12' = @{
-        'aomenc' = @{ param = '--transfer-characteristics='; value = 'bt2020-12bit' };
-        'x264'   = @{ param = '--transfer='; value = '15' };
-        'x265'   = @{ param = '--transfer'; value = 'bt2020-12' };
-        'svt'    = @{ param = '--transfer-characteristics'; value = '15' } 
-    }
-    'smpte170m' = @{
-        'aomenc' = @{ param = '--transfer-characteristics='; value = 'unspecified' };
-        'x264'   = @{ param = '--transfer='; value = '6' };
-        'x265'   = @{ param = '--transfer'; value = 'smpte170m' };
-        'svt'    = @{ param = '--transfer-characteristics'; value = '6' } 
-    }
-    'smpte240m' = @{
-        'aomenc' = @{ param = '--transfer-characteristics='; value = 'unspecified' };
-        'x264'   = @{ param = '--transfer='; value = '7' };
-        'x265'   = @{ param = '--transfer'; value = 'smpte240m' };
-        'svt'    = @{ param = '--transfer-characteristics'; value = '7' } 
-    }
-    'smpte2084' = @{
-        'aomenc' = @{ param = '--transfer-characteristics='; value = 'smpte2084' };
-        'x264'   = @{ param = '--transfer='; value = '16' };
-        'x265'   = @{ param = '--transfer'; value = 'smpte2084' };
-        'svt'    = @{ param = '--transfer-characteristics'; value = '16' } 
-    }
-}
-
-$script:MatrixMappings = @{
-    'bt709'     = @{
-        'aomenc' = @{ param = '--matrix-coefficients='; value = '1' };
-        'x264'   = @{ param = '--colormatrix='; value = '1' };
-        'x265'   = @{ param = '--colormatrix'; value = 'bt709' };
-        'svt'    = @{ param = '--matrix-coefficients'; value = '1' } 
-    }
-    'fcc'       = @{
-        'aomenc' = @{ param = '--matrix-coefficients='; value = '4' };
-        'x264'   = @{ param = '--colormatrix='; value = '4' };
-        'x265'   = @{ param = '--colormatrix'; value = 'fcc' };
-        'svt'    = @{ param = '--matrix-coefficients'; value = '4' } 
-    }
-    'bt470bg'   = @{
-        'aomenc' = @{ param = '--matrix-coefficients='; value = '5' };
-        'x264'   = @{ param = '--colormatrix='; value = '5' };
-        'x265'   = @{ param = '--colormatrix'; value = 'bt470bg' };
-        'svt'    = @{ param = '--matrix-coefficients'; value = '5' } 
-    }
-    'smpte170m' = @{
-        'aomenc' = @{ param = '--matrix-coefficients='; value = '6' };
-        'x264'   = @{ param = '--colormatrix='; value = '6' };
-        'x265'   = @{ param = '--colormatrix'; value = 'smpte170m' };
-        'svt'    = @{ param = '--matrix-coefficients'; value = '6' } 
-    }
-    'smpte240m' = @{
-        'aomenc' = @{ param = '--matrix-coefficients='; value = '7' };
-        'x264'   = @{ param = '--colormatrix='; value = '7' };
-        'x265'   = @{ param = '--colormatrix'; value = 'smpte240m' };
-        'svt'    = @{ param = '--matrix-coefficients'; value = '7' } 
-    }
-    'bt2020nc'  = @{
-        'aomenc' = @{ param = '--matrix-coefficients='; value = '9' };
-        'x264'   = @{ param = '--colormatrix='; value = '9' };
-        'x265'   = @{ param = '--colormatrix'; value = 'bt2020nc' };
-        'svt'    = @{ param = '--matrix-coefficients'; value = '9' } 
-    }
-    'bt2020c'   = @{
-        'aomenc' = @{ param = '--matrix-coefficients='; value = '10' };
-        'x264'   = @{ param = '--colormatrix='; value = '10' };
-        'x265'   = @{ param = '--colormatrix'; value = 'bt2020c' };
-        'svt'    = @{ param = '--matrix-coefficients'; value = '10' } 
-    }
-}
-
-function Get-VideoColorParams {
+function Get-VideoStats {
     <#
-.SYNOPSIS
-    Получает цветовые параметры видеофайла
-#>
+    .SYNOPSIS
+        Вычисляет статистику видеофайла
+    #>
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
+        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
         [string]$VideoFilePath
     )
+    
+    try {
+        $videoFile = Get-Item -LiteralPath $VideoFilePath -ErrorAction Stop
+        
+        # Get all video stream info in one ffprobe call
+        $streamMetadata = & ffprobe -v error -select_streams v:0 `
+            -show_entries stream `
+            -show_entries format=size `
+            -of json "$VideoFilePath" | ConvertFrom-Json -AsHashtable
+        
+        # Calculate FPS from ratio
+        $framesPerSecond = if ($streamMetadata.streams[0].r_frame_rate -match '(\d+)/(\d+)') {
+            [math]::Round([decimal]$matches[1] / [decimal]$matches[2], 3)
+        }
+        else {
+            [decimal]$streamMetadata.streams[0].r_frame_rate
+        }
 
-    $colorParams = & ffprobe -v error -select_streams v:0 `
-        -show_entries "stream=color_range,color_space,color_transfer,color_primaries" `
-        -of default=noprint_wrappers=1 "$VideoFilePath" 2>&1
+        # Get detailed packet info in separate call
+        $packetMetadata = & ffprobe -v error -select_streams v:0 `
+            -count_packets -show_entries packet=dts_time,pts_time,size,flags `
+            -of json "$VideoFilePath" | ConvertFrom-Json -AsHashtable
+        
+        # Calculate frame counts from different sources
+        $frameCountFromPackets = $packetMetadata.packets.Count
+        $frameCountFromStream = [int]$streamMetadata.streams[0].nb_read_packets
+        $frameCountFromNbFrames = if ($streamMetadata.streams[0].nb_frames) {
+            [int]$streamMetadata.streams[0].nb_frames
+        }
+        else {
+            $frameCountFromPackets
+        }
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "Не удалось получить цветовые параметры видео: $colorParams"
-    }
-
-    $result = @{}
-    $colorParams | ForEach-Object {
-        if ($_ -match '(.+)=(.+)') {
-            $key = $matches[1]
-            $value = $matches[2]
-            if ($value -ne 'unknown') {
-                $result[$key] = $value
+        # Calculate duration and bitrate from packets
+        $durationFromPackets = $videoBitrate = $videoDataSize = 0
+        if ($packetMetadata.packets -and $packetMetadata.packets.Count -gt 0) {
+            $firstPacketTime = [double]$packetMetadata.packets[0].pts_time
+            $lastPacketTime = [double]($packetMetadata.packets | Measure-Object -Property pts_time -Maximum).Maximum
+            $durationFromPackets = $lastPacketTime - $firstPacketTime
+            $videoDataSize = ($packetMetadata.packets | Measure-Object -Property size -Sum).Sum
+            
+            if ($durationFromPackets -gt 0) {
+                $videoBitrate = [math]::Round(($videoDataSize * 8) / $durationFromPackets / 1Kb, 2)
             }
         }
+
+        # Calculate duration from different sources
+        $durationFromFrames = if ($frameCountFromNbFrames -gt 0) {
+            [math]::Round($frameCountFromNbFrames / $framesPerSecond, 3)
+        }
+        else {
+            [math]::Round($frameCountFromPackets / $framesPerSecond, 3)
+        }
+
+        $durationFromMetadata = if ($streamMetadata.streams[0].duration) {
+            [math]::Round([double]$streamMetadata.streams[0].duration, 3)
+        }
+        else {
+            $durationFromFrames
+        }
+        
+        # Build result object
+        return [PSCustomObject]@{
+            FilePath            = $VideoFilePath
+            FileName            = $videoFile.Name
+            FileSizeBytes       = $videoFile.Length
+            VideoDataSizeBytes  = $videoDataSize
+            VideoCodecName      = $streamMetadata.streams[0].codec_name
+            ResolutionWidth     = [int]$streamMetadata.streams[0].width
+            ResolutionHeight    = [int]$streamMetadata.streams[0].height
+            FrameRate           = $framesPerSecond
+            FrameRateNum        = [int]($streamMetadata.streams[0].r_frame_rate -split '/')[0]
+            FrameRateDen        = [int]($streamMetadata.streams[0].r_frame_rate -split '/')[1]
+            FrameCount          = $frameCountFromNbFrames
+            FrameCountPackets   = $frameCountFromPackets
+            FrameCountStream    = $frameCountFromStream
+            DurationSeconds     = $durationFromMetadata
+            DurationFromFrames  = $durationFromFrames
+            DurationFromPackets = [math]::Round($durationFromPackets, 3)
+            FormattedDuration   = "{0:hh\:mm\:ss}" -f [timespan]::fromseconds($durationFromMetadata)
+            BitrateKbps         = $videoBitrate
+            PixelFormat         = $streamMetadata.streams[0].pix_fmt
+            BitDepth            = $streamMetadata.streams[0].bits_per_raw_sample
+            StreamMetadata      = $streamMetadata.streams[0]
+            PacketMetadata      = $packetMetadata
+        }
     }
-
-    return [PSCustomObject]@{
-        ColorRange     = $result['color_range']
-        ColorSpace     = $result['color_space']
-        ColorTransfer  = $result['color_transfer']
-        ColorPrimaries = $result['color_primaries']
+    catch {
+        Write-Error "Error processing video file '$VideoFilePath': $_"
+        throw
     }
-}
-
-function Get-VideoColorMappings {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$VideoPath
-    )
-
-    $colorParams = Get-VideoColorParams -VideoFilePath $VideoPath
-    $mappings = @{}
-
-    # Map color range
-    if ($colorParams.ColorRange -and $script:ColorRangeMappings[$colorParams.ColorRange]) {
-        $mappings['Range'] = $script:ColorRangeMappings[$colorParams.ColorRange]
-    }
-
-    # Map color primaries
-    if ($colorParams.ColorPrimaries -and $script:ColorPrimariesMappings[$colorParams.ColorPrimaries]) {
-        $mappings['Primaries'] = $script:ColorPrimariesMappings[$colorParams.ColorPrimaries]
-    }
-
-    # Map transfer characteristics
-    if ($colorParams.ColorTransfer -and $script:TransferMappings[$colorParams.ColorTransfer]) {
-        $mappings['Transfer'] = $script:TransferMappings[$colorParams.ColorTransfer]
-    }
-
-    # Map matrix coefficients
-    if ($colorParams.ColorSpace -and $script:MatrixMappings[$colorParams.ColorSpace]) {
-        $mappings['Matrix'] = $script:MatrixMappings[$colorParams.ColorSpace]
-    }
-
-    return $mappings
 }
 
 function Copy-VideoFragments {
     <#
     .SYNOPSIS
-    Extracts uniform fragments from MKV video file using mkvmerge.
-    
-    .DESCRIPTION
-    Creates new MKV file containing specified number of uniform fragments from source MKV.
-    Uses single mkvmerge call with precise time ranges for maximum reliability.
-    
-    .PARAMETER InputFile
-    Path to input MKV video file
-    
-    .PARAMETER OutputFile
-    Path for output video file
-    
-    .PARAMETER FragmentCount
-    Number of fragments to extract (1-255)
-    
-    .PARAMETER FragmentDuration
-    Duration of each fragment in seconds (1-600)
-    
-    .PARAMETER SkipStartSeconds
-    Seconds to skip at the beginning of the video (default: 0)
-    
-    .PARAMETER SkipEndSeconds
-    Seconds to skip at the end of the video (default: 0)
-    
-    .PARAMETER KeepAudio
-    Include audio streams in output
-    
-    .PARAMETER KeepSubtitles
-    Include subtitle streams in output
-    
-    .PARAMETER KeepAttachments
-    Include attachments in output
-    
-    .PARAMETER KeepGlobalTags
-    Keep global tags from source file (default: false)
-    
-    .PARAMETER KeepChapters
-    Keep chapters from source file (default: false)
-    
-    .EXAMPLE
-    Copy-VideoFragments -InputFile "input.mkv" -OutputFile "output.mkv" -FragmentCount 5 -FragmentDuration 10 -SkipStartSeconds 60 -SkipEndSeconds 120
+        Извлекает фрагменты из MKV видео файла
     #>
-    
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -1451,435 +1135,56 @@ function Copy-VideoFragments {
     }
 }
 
-function Get-VideoStats {
-    <#
-    .SYNOPSIS
-    Calculates average video bitrate using packet-level statistics from ffprobe.
-
-    .DESCRIPTION
-    When stream doesn't contain bit_rate metadata, calculates it by analyzing individual packets
-    using ffprobe's packet inspection capability.
-
-    .PARAMETER VideoFilePath
-        Путь к видеофайлу
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
-        [string]$VideoFilePath
-    )
+# Вспомогательные функции для Get-VideoQualityMetrics
+function Get-ScriptFrameRate {
+    param([string]$ScriptPath, [string]$ScriptType)
     
     try {
-        $videoFile = Get-Item -LiteralPath $VideoFilePath -ErrorAction Stop
-        
-        # Get all video stream info in one ffprobe call
-        $streamMetadata = & ffprobe -v error -select_streams v:0 `
-            -show_entries stream `
-            -show_entries format=size `
-            -of json "$VideoFilePath" | ConvertFrom-Json -AsHashtable
-        
-        # Calculate FPS from ratio
-        $framesPerSecond = if ($streamMetadata.streams[0].r_frame_rate -match '(\d+)/(\d+)') {
-            [math]::Round([decimal]$matches[1] / [decimal]$matches[2], 3)
-        }
-        else {
-            [decimal]$streamMetadata.streams[0].r_frame_rate
-        }
-
-        # Get detailed packet info in separate call
-        $packetMetadata = & ffprobe -v error -select_streams v:0 `
-            -count_packets -show_entries packet=dts_time,pts_time,size,flags `
-            -of json "$VideoFilePath" | ConvertFrom-Json -AsHashtable
-        
-        # Calculate frame counts from different sources
-        $frameCountFromPackets = $packetMetadata.packets.Count
-        $frameCountFromStream = [int]$streamMetadata.streams[0].nb_read_packets
-        $frameCountFromNbFrames = if ($streamMetadata.streams[0].nb_frames) {
-            [int]$streamMetadata.streams[0].nb_frames
-        }
-        else {
-            $frameCountFromPackets
-        }
-
-        # Calculate duration and bitrate from packets
-        $durationFromPackets = $videoBitrate = $videoDataSize = 0
-        if ($packetMetadata.packets -and $packetMetadata.packets.Count -gt 0) {
-            $firstPacketTime = [double]$packetMetadata.packets[0].pts_time
-            $lastPacketTime = [double]($packetMetadata.packets | Measure-Object -Property pts_time -Maximum).Maximum
-            $durationFromPackets = $lastPacketTime - $firstPacketTime
-            $videoDataSize = ($packetMetadata.packets | Measure-Object -Property size -Sum).Sum
+        if ($ScriptType -eq 'VapourSynth') {
+            $vspipeApp = if ($global:VideoTools.VSPipe) { $global:VideoTools.VSPipe } else { 'vspipe' }
+            $vspipeArgs = @('-i', $ScriptPath, '--info')
+            $vspipeOutput = & $vspipeApp @vspipeArgs 2>&1
             
-            if ($durationFromPackets -gt 0) {
-                $videoBitrate = [math]::Round(($videoDataSize * 8) / $durationFromPackets / 1Kb, 2)
+            $fpsLine = $vspipeOutput | Where-Object { $_ -match 'FPS:\s*([\d\/]+(?:\.\d+)?)' }
+            if ($fpsLine) {
+                $fps = [regex]::Match($fpsLine, 'FPS:\s*([\d\/]+(?:\.\d+)?)').Groups[1].Value
+                return [double] [Math]::Round((Convert-FpsToDouble -FpsString $fps), 2)
             }
         }
-
-        # Calculate duration from different sources
-        $durationFromFrames = if ($frameCountFromNbFrames -gt 0) {
-            [math]::Round($frameCountFromNbFrames / $framesPerSecond, 3)
-        }
-        else {
-            [math]::Round($frameCountFromPackets / $framesPerSecond, 3)
-        }
-
-        $durationFromMetadata = if ($streamMetadata.streams[0].duration) {
-            [math]::Round([double]$streamMetadata.streams[0].duration, 3)
-        }
-        else {
-            $durationFromFrames
-        }
-        
-        # Build result object
-        return [PSCustomObject]@{
-            FilePath            = $VideoFilePath
-            FileName            = $videoFile.Name
-            FileSizeBytes       = $videoFile.Length
-            VideoDataSizeBytes  = $videoDataSize
-            VideoCodecName      = $streamMetadata.streams[0].codec_name
-            ResolutionWidth     = [int]$streamMetadata.streams[0].width
-            ResolutionHeight    = [int]$streamMetadata.streams[0].height
-            FrameRate           = $framesPerSecond
-            FrameRateNum        = [int]($streamMetadata.streams[0].r_frame_rate -split '/')[0]
-            FrameRateDen        = [int]($streamMetadata.streams[0].r_frame_rate -split '/')[1]
-            FrameCount          = $frameCountFromNbFrames
-            FrameCountPackets   = $frameCountFromPackets
-            FrameCountStream    = $frameCountFromStream
-            DurationSeconds     = $durationFromMetadata
-            DurationFromFrames  = $durationFromFrames
-            DurationFromPackets = [math]::Round($durationFromPackets, 3)
-            FormattedDuration   = "{0:hh\:mm\:ss}" -f [timespan]::fromseconds($durationFromMetadata)
-            BitrateKbps         = $videoBitrate
-            PixelFormat         = $streamMetadata.streams[0].pix_fmt
-            BitDepth            = $streamMetadata.streams[0].bits_per_raw_sample
-            StreamMetadata      = $streamMetadata.streams[0]
-            PacketMetadata      = $packetMetadata
+        elseif ($ScriptType -eq 'AviSynth') {
+            # Для AviSynth используем FFmpeg для получения FPS
+            $ffprobeApp = if ($global:VideoTools.FFprobe) { $global:VideoTools.FFprobe } else { 'ffprobe' }
+            $ffprobeArgs = @(
+                '-v', 'error',
+                '-f', 'avisynth',
+                '-i', $ScriptPath,
+                '-show_entries', 'stream=r_frame_rate',
+                '-of', 'json'
+            )
+            
+            $ffprobeOutput = & $ffprobeApp @ffprobeArgs
+            $fpsJson = $ffprobeOutput | ConvertFrom-Json
+            if ($fpsJson.streams -and $fpsJson.streams[0].r_frame_rate) {
+                $fps = $fpsJson.streams[0].r_frame_rate
+                return [double] [Math]::Round((Convert-FpsToDouble -FpsString $fps), 2)
+            }
         }
     }
     catch {
-        Write-Error "Error processing video file '$VideoFilePath': $_"
-        throw
+        Write-Verbose "Не удалось получить FPS из скрипта ${ScriptPath}: $_"
     }
+    
+    # Возвращаем значение по умолчанию
+    return 24.0
 }
 
-function Get-VideoAutoCropParams {
-    param (
-        [Parameter(Mandatory = $true)]
-        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
-        [string]$InputFile,
 
-        [Parameter(Mandatory = $false)]
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$ThresholdBegin = 0,
 
-        [Parameter(Mandatory = $false)]
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$ThresholdEnd = 0,
 
-        [Parameter(Mandatory = $false)]
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$LuminanceThreshold = 1000,
 
-        [Parameter(Mandatory = $false)]
-        [ValidateSet(2, 4, 8, 16, 32)]
-        [int]$Round = 2
-    )
-    
-    # Функция для округления до ближайшего кратного значения
-    function RoundToNearestMultiple {
-        param([int]$Value, [int]$Multiple)
-        if ($Multiple -eq 0) { return $Value }
-        return [Math]::Round($Value / $Multiple) * $Multiple
-    }
 
-    $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
-    
-    @"
-import vapoursynth as vs
-core = vs.core
 
-# Constants for better readability
-MATRIX = {
-    'RGB': 0,
-    'BT709': 1,
-    'UNSPEC': 2,
-    'BT470BG': 5,
-    'BT2020_NCL': 9
-}
-
-TRANSFER = {
-    'BT709': 1,
-    'BT470BG': 5,
-    'ST2084': 16
-}
-
-PRIMARIES = {
-    'BT709': 1,
-    'BT470BG': 5,
-    'BT2020': 9
-}
-
-# Load source
-clip = core.lsmas.LWLibavSource(r"$InputFile")
-
-# Get frame properties
-props = clip.get_frame(0).props
-
-# Determine matrix, transfer and primaries
-matrix = props.get('_Matrix', MATRIX['UNSPEC'])
-if matrix == MATRIX['UNSPEC'] or matrix >= 15:
-    matrix = MATRIX['RGB'] if clip.format.id == vs.RGB24 else (
-        MATRIX['BT709'] if clip.height > 576 else MATRIX['BT470BG']
-    )
-
-transfer = props.get('_Transfer', TRANSFER['BT709'])
-if transfer <= 0 or transfer >= 19:
-    transfer = (
-        TRANSFER['BT470BG'] if matrix == MATRIX['BT470BG'] else
-        TRANSFER['ST2084'] if matrix == MATRIX['BT2020_NCL'] else
-        TRANSFER['BT709']
-    )
-
-primaries = props.get('_Primaries', PRIMARIES['BT709'])
-if primaries <= 0 or primaries >= 23:
-    primaries = (
-        PRIMARIES['BT470BG'] if matrix == MATRIX['BT470BG'] else
-        PRIMARIES['BT2020'] if matrix == MATRIX['BT2020_NCL'] else
-        PRIMARIES['BT709']
-    )
-
-# Display color parameters
-#clip = core.text.Text(
-#    clip, 
-#    text='matrix: %d; transfer: %d; primaries: %d' % (matrix, transfer, primaries),
-#    scale=10
-#)
-
-# Process video
-clip = clip.resize.Bicubic(
-    matrix_in=matrix,
-    transfer_in=transfer,
-    primaries_in=primaries,
-    format=vs.RGB24
-)
-clip = clip.libp2p.Pack()
-clip.set_output()
-"@ | Set-Content -Path $tmpScriptFile -Force
-
-    $AutoCropPath = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe'
-    $acFrameCount = 2
-    $acFrameInterval = 400
-    
-    try {
-        $autocropOutput = & $AutoCropPath $tmpScriptFile $acFrameCount $acFrameInterval 144 144 $LuminanceThreshold 0
-        
-        # Получаем последнюю строку вывода (с параметрами обрезки)
-        $cropLine = $autocropOutput | Select-Object -Last 1
-        
-        # Разбиваем строку по запятым и преобразуем в числа
-        $cropParams = $cropLine -split ',' | ForEach-Object { [int]$_ }
-
-        # Округляем значения до кратных $Round
-        $roundedLeft = RoundToNearestMultiple -Value $cropParams[0] -Multiple $Round
-        $roundedTop = RoundToNearestMultiple -Value $cropParams[1] -Multiple $Round
-        $roundedRight = RoundToNearestMultiple -Value $cropParams[2] -Multiple $Round
-        $roundedBottom = RoundToNearestMultiple -Value $cropParams[3] -Multiple $Round
-
-        # Создаем объект с параметрами обрезки
-        return [PSCustomObject]@{
-            Left           = $roundedLeft
-            Top            = $roundedTop
-            Right          = $roundedRight
-            Bottom         = $roundedBottom
-            OriginalLeft   = $cropParams[0]
-            OriginalTop    = $cropParams[1]
-            OriginalRight  = $cropParams[2]
-            OriginalBottom = $cropParams[3]
-        }
-    }
-    finally {
-        if (Test-Path -LiteralPath $tmpScriptFile) {
-            Remove-Item -LiteralPath $tmpScriptFile -ErrorAction SilentlyContinue
-        }
-    }
-}
-
-class VideoColorInfo {
-    [bool]$IsHDR
-    [bool]$IsDolbyVision
-    [string]$ColorPrimaries
-    [string]$ColorTransfer
-    [string]$ColorSpace
-    [string]$ColorRange
-    [string]$HDRFormat
-    [double]$MaxLuminance
-    [double]$MinLuminance
-    [string]$MatrixCoefficients
-    
-    VideoColorInfo() {
-        $this.IsHDR = $false
-        $this.IsDolbyVision = $false
-        $this.HDRFormat = "SDR"
-    }
-    
-    [string] ToString() {
-        if ($this.IsHDR) {
-            $format = if ($this.IsDolbyVision) { "Dolby Vision" } else { $this.HDRFormat }
-            return "HDR ($format) - Primaries: $($this.ColorPrimaries), Transfer: $($this.ColorTransfer)"
-        }
-        return "SDR - Primaries: $($this.ColorPrimaries), Transfer: $($this.ColorTransfer)"
-    }
-}
-
-function Get-DetailedVideoColorInfo {
-    <#
-    .SYNOPSIS
-        Получает детальную информацию о цветовых характеристиках видео
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$VideoPath
-    )
-    
-    try {
-        $colorInfo = [VideoColorInfo]::new()
-        
-        # Получаем базовую информацию через ffprobe
-        $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams v:0 `
-            -show_entries stream=color_primaries,color_transfer,color_space,color_range,side_data_list `
-            -show_entries format_tags=MAXCLL,MAXFALL `
-            -of json $VideoPath | ConvertFrom-Json
-        
-        $stream = $ffprobeOutput.streams[0]
-        $formatTags = $ffprobeOutput.format.tags
-        
-        # Заполняем базовые цветовые характеристики
-        $colorInfo.ColorPrimaries = $stream.color_primaries ?? 'unknown'
-        $colorInfo.ColorTransfer = $stream.color_transfer ?? 'unknown'
-        $colorInfo.ColorSpace = $stream.color_space ?? 'unknown'
-        $colorInfo.ColorRange = $stream.color_range ?? 'unknown'
-        
-        # Определяем HDR характеристики
-        $colorInfo.IsHDR = $false
-        
-        # Проверяем transfer characteristics для HDR
-        if ($stream.color_transfer -in ('smpte2084', 'arib-std-b67', 'bt2020-10', 'bt2020-12')) {
-            $colorInfo.IsHDR = $true
-            $colorInfo.HDRFormat = switch ($stream.color_transfer) {
-                'smpte2084' { 'HDR10' }
-                'arib-std-b67' { 'HLG' }
-                'bt2020-10' { 'HDR10' }
-                'bt2020-12' { 'HDR10' }
-                default { 'HDR' }
-            }
-        }
-        
-        # Проверяем Dolby Vision
-        if ($stream.side_data_list) {
-            foreach ($sideData in $stream.side_data_list) {
-                if ($sideData.side_data_type -eq 'DOVI configuration record') {
-                    $colorInfo.IsHDR = $true
-                    $colorInfo.IsDolbyVision = $true
-                    $colorInfo.HDRFormat = 'Dolby Vision'
-                    break
-                }
-            }
-        }
-        
-        # Получаем информацию о яркости из метаданных
-        if ($formatTags) {
-            if ($formatTags.MAXCLL) {
-                $colorInfo.MaxLuminance = [double]$formatTags.MAXCLL
-            }
-            if ($formatTags.MAXFALL) {
-                $colorInfo.MinLuminance = [double]$formatTags.MAXFALL
-            }
-        }
-        
-        # Определяем матричные коэффициенты
-        if ($stream.color_space -and $script:MatrixMappings[$stream.color_space]) {
-            $colorInfo.MatrixCoefficients = $stream.color_space
-        }
-        
-        Write-Log "Цветовая информация: $colorInfo" -Severity Information -Category 'Video'
-        return $colorInfo
-    }
-    catch {
-        Write-Log "Ошибка при получении цветовой информации: $_" -Severity Warning -Category 'Video'
-        # Возвращаем базовый объект с информацией об ошибке
-        $colorInfo.IsHDR = Test-VideoHDR -VideoPath $VideoPath
-        return $colorInfo
-    }
-}
-
-function Get-RecommendedEncoderSettings {
-    <#
-    .SYNOPSIS
-        Рекомендует настройки энкодера на основе характеристик видео
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [VideoColorInfo]$ColorInfo,
-        
-        [Parameter(Mandatory)]
-        [string]$EncoderName,
-        
-        [object]$VideoStats
-    )
-    
-    $recommendations = @{
-        Encoder = $EncoderName
-        QualityAdjustment = 0
-        PresetAdjustment = 0
-        AdditionalParams = @()
-        Notes = @()
-    }
-    
-    # Рекомендации для HDR контента
-    if ($ColorInfo.IsHDR) {
-        $recommendations.Notes += "HDR контент: $($ColorInfo.HDRFormat)"
-        
-        switch ($EncoderName) {
-            { $_ -like 'SvtAv1Enc*' } {
-                if ($ColorInfo.IsDolbyVision) {
-                    $recommendations.AdditionalParams += '--enable-dolby-vision', '1'
-                    $recommendations.Notes += "Включена поддержка Dolby Vision"
-                }
-                
-                # Для HDR немного увеличиваем качество
-                $recommendations.QualityAdjustment = -2
-                $recommendations.Notes += "HDR требует более высокого битрейта"
-            }
-            
-            'AomAv1Enc' {
-                $recommendations.AdditionalParams += '--color-primaries=bt2020', '--transfer-characteristics=smpte2084'
-                if ($ColorInfo.MaxLuminance -gt 0) {
-                    $recommendations.AdditionalParams += "--mastering-display=$($ColorInfo.MaxLuminance)nits"
-                }
-            }
-        }
-    }
-    
-    # Рекомендации на основе разрешения
-    if ($VideoStats -and $VideoStats.ResolutionWidth -gt 1920) {
-        $recommendations.Notes += "Высокое разрешение: $($VideoStats.ResolutionWidth)x$($VideoStats.ResolutionHeight)"
-        
-        # Для 4K+ уменьшаем preset для лучшего качества
-        if ($VideoStats.ResolutionWidth -gt 3840) {
-            $recommendations.PresetAdjustment = -2
-            $recommendations.Notes += "8K контент: используем более медленный preset"
-        } elseif ($VideoStats.ResolutionWidth -gt 2560) {
-            $recommendations.PresetAdjustment = -1
-            $recommendations.Notes += "4K контент: умеренное снижение скорости"
-        }
-    }
-    
-    return $recommendations
-}
-
-# Онлайн-перевод
+# Онлайн-перевод (оставляем, так как могут пригодиться)
 function Invoke-MyMemoryTranslate {
     param(
         [Parameter(Mandatory = $true)]
@@ -1986,10 +1291,22 @@ function Invoke-FreeTranslate {
 }
 
 
-# 
-Export-ModuleMember -Function Initialize-Configuration, Get-AudioTrackInfo, `
-    Remove-TemporaryFiles, Get-VideoScriptInfo, Get-VideoCropParameters, `
-    Write-Log, Get-VideoQualityMetrics, Get-VideoFrameRate, ConvertTo-Seconds, `
-    Get-SafeFileName, Get-EncoderPath, Get-EncoderParams, Get-EncoderConfig, `
-    Copy-VideoFragments, Get-VideoStats, Get-VideoAutoCropParams, Get-VideoColorMappings, `
-    Convert-FpsToDouble, Get-MP4AudioTrackInfo, Test-VideoHDR, Invoke-FreeTranslate
+# Экспорт функций
+Export-ModuleMember -Function `
+    Initialize-Configuration, `
+    Write-Log, `
+    Get-VideoFrameRate, `
+    ConvertTo-Seconds, `
+    Get-SafeFileName, `
+    Get-EncoderPath, `
+    Get-EncoderParams, `
+    Get-EncoderConfig, `
+    Get-VideoQualityMetrics, `
+    Get-VideoScriptInfo, `
+    Get-VideoCropParameters, `
+    Convert-FpsToDouble, `
+    Test-EncoderPreset, `
+    Copy-VideoFragments, `
+    Get-VideoStats, `
+    Get-VideoAutoCropParams, `
+    Invoke-FreeTranslate
