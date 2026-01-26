@@ -869,7 +869,7 @@ function Get-EncoderConfig {
     }
 }
 
-function Get-VideoFrameRate {
+<# function Get-VideoFrameRate {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$VideoPath)
     
@@ -942,6 +942,7 @@ function Get-VideoFrameRate {
         throw
     }
 }
+#>
 
 <# function Test-AviSynthSupport {
     [CmdletBinding()]

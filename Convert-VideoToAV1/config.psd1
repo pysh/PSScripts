@@ -161,7 +161,7 @@
                 }
                 SvtAv1EncESS       = @{
                     Quality  = 'medium'     # 'higher', 'high', 'medium', 'low',  'lower'
-                    Speed    = 'slow'   # 'slower', 'slow', 'medium', 'fast', 'faster'
+                    Speed    = 'slow'       # 'slower', 'slow', 'medium', 'fast', 'faster'
                     BaseArgs = @(
                         '--rc', '0',
                         '--progress', '3',
