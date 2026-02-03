@@ -38,28 +38,57 @@ function ConvertTo-OpusAudio {
             New-Item -Path $audioPath -ItemType Directory -Force | Out-Null
         }
 
-        # Подготовка данных для параллельного выполнения
+        # Подготовка данных
         $tools = $global:VideoTools.Clone()
         $bitrates = $global:Config.Encoding.Audio.Bitrates
         $keepTempAudioFiles = $global:Config.Processing.keepTempAudioFiles
         
-        # Используем $CopyAudioMode для параллельного блока
+        # Используем $CopyAudioMode для последовательного блока
         $copyAudio = $CopyAudioMode
 
         # Параметры обрезки
         $trimParams = Get-TrimParametersForAudio -Job $Job
         
-        # Параллельная обработка
-        $audioTracks | ForEach-Object -Parallel {
-            $track = $_
-            $audioPath = $using:audioPath
-            $tools = $using:tools
-            $bitrates = $using:bitrates
-            $job = $using:Job
-            $keepTempAudioFiles = $using:keepTempAudioFiles
-            $trimParams = $using:trimParams
-            $copyAudio = $using:copyAudio  # Используем локальную переменную
-
+        # Счетчики для прогресс-бара
+        $totalTracks = $audioTracks.Count
+        $processedTracks = 0
+        $startTime = Get-Date
+        $estimatedTimes = @()
+        
+        Write-Log "Обработка $totalTracks аудиодорожек..." -Severity Information -Category 'Audio'
+        
+        # Последовательная обработка с прогресс-баром
+        foreach ($track in $audioTracks) {
+            $processedTracks++
+            $trackStartTime = Get-Date
+            
+            # Обновляем прогресс-бар
+            $percentComplete = [math]::Round(($processedTracks / $totalTracks) * 100, 1)
+            $currentOperation = if ($copyAudio) { "Копирование" } else { "Перекодирование" }
+            $currentOperation += " дорожки $($track.Index): $($track.CodecName)"
+            
+            # Рассчитываем оставшееся время
+            $elapsedTime = (Get-Date) - $startTime
+            $averageTimePerTrack = if ($processedTracks -gt 1) { 
+                $elapsedTime.TotalSeconds / ($processedTracks - 1) 
+            } else { 0 }
+            
+            $remainingTracks = $totalTracks - $processedTracks
+            $estimatedRemainingSeconds = [math]::Round($averageTimePerTrack * $remainingTracks)
+            $estimatedRemaining = if ($estimatedRemainingSeconds -gt 0) {
+                $remainingTimeSpan = [TimeSpan]::FromSeconds($estimatedRemainingSeconds)
+                "Осталось: $($remainingTimeSpan.ToString('hh\:mm\:ss'))"
+            } else {
+                "Расчет времени..."
+            }
+            
+            # Показываем прогресс-бар
+            Write-Progress -Activity "Обработка аудио" `
+                -Status "$currentOperation | Дорожка $processedTracks из $totalTracks ($percentComplete%)" `
+                -CurrentOperation $estimatedRemaining `
+                -PercentComplete $percentComplete `
+                -Id 1
+            
             $outputFileName = if ($copyAudio) {
                 # Используем оригинальный кодек для имени файла при копировании
                 $extension = Get-AudioExtension -CodecName $track.CodecName
@@ -85,7 +114,7 @@ function ConvertTo-OpusAudio {
             
             if (-not (Test-Path -LiteralPath $audioOutput -PathType Leaf)) {
                 Invoke-AudioTrackProcess `
-                    -Job $job `
+                    -Job $Job `
                     -Track $track `
                     -OutputFile $audioOutput `
                     -Tools $tools `
@@ -99,15 +128,29 @@ function ConvertTo-OpusAudio {
             }
 
             # Возвращаем объект с информацией о дорожке
-            Get-AudioTrackResult -Track $track -OutputFile $audioOutput -CopyAudio $copyAudio
+            $trackResult = Get-AudioTrackResult -Track $track -OutputFile $audioOutput -CopyAudio $copyAudio
+            $Job.AudioOutputs.Add($trackResult)
+            $Job.TempFiles.Add($trackResult.Path)
             
-        } -ThrottleLimit $ParallelThreads | Sort-Object { $_.Index } | ForEach-Object {
-            $Job.AudioOutputs.Add($_)
-            $Job.TempFiles.Add($_.Path)
+            # Рассчитываем время обработки текущей дорожки
+            $trackProcessingTime = ((Get-Date) - $trackStartTime).TotalSeconds
+            $estimatedTimes += $trackProcessingTime
+            
+            Write-Verbose "Обработана дорожка $($track.Index)/$totalTracks за $([math]::Round($trackProcessingTime, 2)) сек."
         }
-
+        
+        # Завершаем прогресс-бар
+        Write-Progress -Activity "Обработка аудио" -Completed -Id 1
+        
         # Анализируем статистику обработки
         $processingStats = Get-AudioProcessingStatistics -AudioOutputs $Job.AudioOutputs
+        
+        # Выводим итоговую статистику
+        $totalTime = ((Get-Date) - $startTime).TotalSeconds
+        $averageTime = if ($totalTracks -gt 0) { [math]::Round($totalTime / $totalTracks, 2) } else { 0 }
+        
+        Write-Log "Обработка аудио завершена за $([math]::Round($totalTime, 2)) сек. (среднее: ${averageTime} сек./дорожка)" `
+            -Severity Information -Category 'Audio'
         
         if ($copyAudio) {
             Write-Log "Успешно скопировано $($processingStats.CopiedTracks) аудиодорожек (без перекодировки)" `
@@ -127,6 +170,8 @@ function ConvertTo-OpusAudio {
         return $Job
     }
     catch {
+        # В случае ошибки тоже завершаем прогресс-бар
+        Write-Progress -Activity "Обработка аудио" -Completed -Id 1
         Write-Log "Ошибка при обработке аудио: $_" -Severity Error -Category 'Audio'
         throw
     }

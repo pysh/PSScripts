@@ -87,7 +87,7 @@ function ConvertTo-Av1Video {
         
         # Определяем тип энкодера
         $isAV1Encoder = $Job.Encoder -match 'Av1Enc|Rav1eEnc|AomAv1Enc'
-        $isHEVCEncoder = $Job.Encoder -eq 'x265'
+        $isHEVCEncoder = $Job.Encoder -match 'x265'
         
         # Создаем файлы в зависимости от энкодера
         if ($isAV1Encoder) {

@@ -12,19 +12,19 @@ using namespace System.IO
 param (
     [Parameter(Mandatory = $false, Position = 0)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Container })]
-    [string]$InputDirectory = 'g:\Видео\Сериалы\Зарубежные\Очень странные дела (Stranger Things)\season 05\',
+    [string]$InputDirectory = 'v:\Сериалы\Зарубежные\Ходячие мертвецы (Walking Dead)\BDREMUX\Season_10\',
     
     [Parameter(Mandatory = $false)]
     [string]$OutputDirectory = (Join-Path -Path $InputDirectory -ChildPath '.enc'),
     
     [Parameter(Mandatory = $false)]
-    [string]$InputFilesFilter = '',
+    [string]$InputFilesFilter = 'S10E10',
     
     [Parameter(Mandatory = $false)]
     [string]$TempDir = 'r:\.temp\',
     
     [Parameter(Mandatory = $false)]
-    [Switch]$CopyFiletoTempDir = $false,
+    [Switch]$CopyFiletoTempDir = $true,
     
     [Parameter(Mandatory = $false)]
     [int]$TrimStartFrame = 0,
@@ -42,7 +42,7 @@ param (
     [string]$TrimTimecode = "",
     
     [Parameter(Mandatory = $false)]
-    [bool]$CopyAudio = $false,
+    [bool]$CopyAudio = $true,
     
     [Parameter(Mandatory = $false)]
     [bool]$CopyVideo = $false,
@@ -51,21 +51,20 @@ param (
     [System.Object]$CropParameters,
     
     [Parameter(Mandatory = $false)]
-    [ValidateSet(
-        'x265', 'SvtAv1Enc', 'SvtAv1EncESS', 'SvtAv1EncHDR',
-        'SvtAv1EncPSYEX', 'Rav1eEnc', 'AomAv1Enc', 'SvtAv1EncESS_grain'
-    )]
-    [string]$Encoder,
+    [string]$Encoder = "x265.film_grain",
     
     [Parameter(Mandatory = $false)]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
-    [string]$TemplatePath,
+    [string]$TemplatePath = 'g:\Видео\Сериалы\Зарубежные\Ходячие мертвецы (Walking Dead)\HD_Script_TWD_s10.vpy',
     
     [Parameter(Mandatory = $false)]
     [switch]$ForceRemux = $false,
     
     [Parameter(Mandatory = $false)]
-    [switch]$KeepRemuxedFiles = $false
+    [switch]$KeepRemuxedFiles = $true,
+    
+    [Parameter(Mandatory = $false)]
+    [switch]$ListEncoders = $false
 )
 
 begin {
@@ -78,7 +77,7 @@ begin {
  \____\___/|_| |_|\_/ \___|_|   \__|     \_/  |_|\__,_|\___|\___/|_|\___/_/   \_\_/  |_|
 '@ -ForegroundColor DarkBlue
     
-    # Вспомогательные функции (все внутри begin блока)
+    # Вспомогательные функции
     function New-VideoJob {
         [CmdletBinding()]
         param(
@@ -111,10 +110,13 @@ begin {
         param([hashtable]$Job)
         
         try {
+            # Получаем код энкодера
+            $encoderCode = Get-EncoderCode -EncoderName $Job.Encoder
+            
             if ($Job.NFOFields) {
                 # Получаем информацию о разрешении видео
                 $ffprobeOutput = & $global:VideoTools.FFprobe -v error -select_streams v:0 `
-                    -show_entries stream=width, height, codec_name -of json $Job.VideoPath | ConvertFrom-Json
+                    -show_entries stream=width,height,codec_name -of json $Job.VideoPath | ConvertFrom-Json
                 
                 $width = $ffprobeOutput.streams[0].width
                 $height = $ffprobeOutput.streams[0].height
@@ -137,13 +139,14 @@ begin {
                 }
                 
                 # Формируем имя файла
-                $finalOutputName = "{0} - s{1:00}e{2:00} - {3} [{4}][{5}][av1]_out.mkv" -f `
+                $finalOutputName = "{0} - s{1:00}e{2:00} - {3} [{4}][{5}][{6}]_out.mkv" -f `
                     $Job.NFOFields.SHOWTITLE,
                 [int]$Job.NFOFields.SEASON_NUMBER,
                 [int]$Job.NFOFields.PART_NUMBER,
                 $Job.NFOFields.TITLE,
                 $airDateFormatted,
-                $resolution
+                $resolution,
+                $encoderCode
                 
                 # Заменяем недопустимые символы
                 $invalidChars = [IO.Path]::GetInvalidFileNameChars()
@@ -160,7 +163,7 @@ begin {
         }
         
         # Значение по умолчанию
-        return "$($Job.BaseName)_out.mkv"
+        return "$($Job.BaseName)_[$encoderCode]_out.mkv"
     }
     
     function Get-TrimParameters {
@@ -249,27 +252,69 @@ begin {
         }
     }
     
+    function Remove-TemporaryFiles {
+        [CmdletBinding()]
+        param([hashtable]$Job)
+        
+        $removedCount = 0
+        foreach ($file in $Job.TempFiles) {
+            try {
+                if (Test-Path -LiteralPath $file) {
+                    Remove-Item -LiteralPath $file -Force -Recurse -ErrorAction SilentlyContinue
+                    $removedCount++
+                }
+            }
+            catch {
+                Write-Log "Не удалось удалить временный файл ${file}: $_" -Severity Warning -Category 'Main'
+            }
+        }
+        Write-Log "Удалено $removedCount временных файлов" -Severity Information -Category 'Main'
+    }
+    
     # Импорт модулей
     $modulesPath = Join-Path $PSScriptRoot "Modules"
     @("VideoProcessor.psm1", "AudioProcessor.psm1", "MetadataProcessor.psm1", 
-      "Utilities.psm1", "TempFileManager.psm1", "RemuxProcessor.psm1") | ForEach-Object {
-        Import-Module (Join-Path $modulesPath $_) -Force -ErrorAction Stop
+        "Utilities.psm1", "TempFileManager.psm1", "RemuxProcessor.psm1",
+        "ColorProcessor.psm1") | ForEach-Object {
+            Import-Module (Join-Path $modulesPath $_) -Force -ErrorAction Stop
     }
     
     Initialize-Configuration -ConfigPath (Join-Path -Path $PSScriptRoot -ChildPath "config.psd1")
     
-    # Устанавливаем значение по умолчанию для Encoder после загрузки конфига
-    if (-not $PSBoundParameters.ContainsKey('Encoder')) {
-        $Encoder = $global:Config.Encoding.DefaultEncoder
+    # Если запрошен список энкодеров - показываем и выходим
+    if ($ListEncoders) {
+        Write-Host "`nДоступные энкодеры и пресеты:" -ForegroundColor Cyan
+        Write-Host ("=" * 50)
+        
+        $availableEncoders = Get-AvailableEncoders -Format "Display"
+        foreach ($enc in $availableEncoders) {
+            Write-Host "$($enc.FullName)" -ForegroundColor Green -NoNewline
+            Write-Host " - $($enc.DisplayName)"
+        }
+        
+        Write-Host "`nПример использования:" -ForegroundColor Yellow
+        Write-Host "  .\Convert-VideoToAV1.ps1 -Encoder 'x265.film_grain'" -ForegroundColor White
+        Write-Host "  .\Convert-VideoToAV1.ps1 -Encoder 'SvtAv1EncESS.grain_optimized'" -ForegroundColor White
+        
+        exit 0
     }
     
-    # Проверяем доступность энкодера
-    $availableEncoders = $global:Config.Encoding.AvailableEncoders.Keys
-    $encoderExists = $availableEncoders -contains $Encoder -or 
-    $global:Config.Encoding.Video.EncoderParams.ContainsKey($Encoder)
+    # Устанавливаем энкодер по умолчанию из конфига
+    if (-not $PSBoundParameters.ContainsKey('Encoder')) {
+        $Encoder = $global:Config.Encoding.DefaultEncoder
+        Write-Log "Используется энкодер по умолчанию: $Encoder" -Severity Information -Category 'Config'
+    }
     
-    if (-not $encoderExists) {
-        Write-Log "Предупреждение: Энкодер '$Encoder' не найден в AvailableEncoders" -Severity Warning -Category 'Config'
+    # Валидация выбранного энкодера
+    $encoderCheck = Test-EncoderPreset -EncoderName $Encoder
+    if (-not $encoderCheck.IsAvailable) {
+        throw "Энкодер '$Encoder' не найден. Используйте -ListEncoders для просмотра доступных вариантов."
+    }
+    
+    if (-not $encoderCheck.HasConfig) {
+        # Если указан только базовый энкодер, используем пресет 'main'
+        $Encoder = "$($encoderCheck.BaseEncoder).main"
+        Write-Log "Используется пресет по умолчанию: $Encoder" -Severity Information -Category 'Config'
     }
     
     # ПЕРЕОПРЕДЕЛЕНИЕ ПАРАМЕТРОВ КОНФИГА
@@ -392,6 +437,9 @@ process {
                     }
                 }
                 
+                # Устанавливаем выбранный энкодер
+                $job.Encoder = $Encoder
+                
                 # Копируем NFO файл если есть
                 $nfoSrc = [IO.Path]::ChangeExtension($job.OriginalPath, 'nfo')
                 if (Test-Path -LiteralPath $nfoSrc) {
@@ -400,14 +448,6 @@ process {
                     $job.TempFiles.Add($nfoDst)
                     Write-Log "NFO файл скопирован" -Severity Information -Category 'Metadata'
                 }
-                
-                # Устанавливаем выбранный энкодер
-                $job.Encoder = $Encoder
-                $job.EncoderPath = Get-EncoderPath -EncoderName $Encoder
-                $encoderConfig = Get-EncoderConfig -EncoderName $Encoder
-                $job.EncoderParams = Get-EncoderParams -EncoderName $Encoder -EncoderConfig $encoderConfig
-                
-                Write-Log "Параметры энкодера: $Encoder" -Severity Information -Category 'Video'
                 
                 # 1. ОБРАБОТКА МЕТАДАННЫХ
                 Write-Log "Этап 1/3: Обработка метаданных" -Severity Information -Category 'Main'
@@ -439,6 +479,13 @@ process {
                 
                 Write-Log "Параметры обрезки: Start=$($job.TrimStartSeconds)s, Duration=$($job.TrimDurationSeconds)s" `
                     -Severity Information -Category 'Main'
+                
+                # Получаем конфигурацию энкодера
+                $encoderConfig = Get-EncoderConfig -EncoderName $Encoder
+                $job.EncoderPath = Get-EncoderPath -EncoderName $encoderConfig.BaseEncoder
+                $job.EncoderParams = Get-EncoderParams -EncoderName $Encoder -EncoderConfig $encoderConfig
+                
+                Write-Log "Параметры энкодера: $($encoderConfig.DisplayName ?? $Encoder)" -Severity Information -Category 'Video'
                 
                 # 2. ОБРАБОТКА АУДИО
                 $audioMode = if ($global:Config.Encoding.Audio.CopyAudio) { "копирование" } else { "перекодирование в Opus" }

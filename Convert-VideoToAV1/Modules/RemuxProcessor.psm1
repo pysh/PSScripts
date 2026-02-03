@@ -29,6 +29,62 @@ function Convert-ToMKVUniversal {
         
         Write-Log "Ремукс $($inputItem.Name) в MKV..." -Severity Information -Category 'Remux'
         
+        # ============================================
+        # ПЕРВЫЙ ЭТАП: ПРОВЕРКА СУЩЕСТВУЮЩЕГО ФАЙЛА
+        # ============================================
+        
+        if (Test-Path -LiteralPath $OutputFile -PathType Leaf) {
+            Write-Log "Выходной файл уже существует, проверяем его содержимое..." -Severity Information -Category 'Remux'
+            
+            # Получаем информацию об исходном файле
+            $originalInfo = Get-VideoFileInfo -InputFile $InputFile
+            
+            # Проверяем существующий файл
+            $existingInfo = & $global:VideoTools.MkvMerge -J $OutputFile 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $existingJson = $existingInfo | ConvertFrom-Json
+                
+                $originalVideoCount = $originalInfo.Streams.Video.Count
+                $originalAudioCount = $originalInfo.Streams.Audio.Count
+                $originalSubsCount = $originalInfo.Streams.Subtitles.Count
+                
+                $existingVideoCount = ($existingJson.tracks | Where-Object { $_.type -eq 'video' }).Count
+                $existingAudioCount = ($existingJson.tracks | Where-Object { $_.type -eq 'audio' }).Count
+                $existingSubsCount = ($existingJson.tracks | Where-Object { $_.type -eq 'subtitles' }).Count
+                
+                Write-Log "Сравнение дорожек:" -Severity Information -Category 'Remux'
+                Write-Log "  Видео: оригинал=$originalVideoCount, существующий=$existingVideoCount" -Severity Information -Category 'Remux'
+                Write-Log "  Аудио: оригинал=$originalAudioCount, существующий=$existingAudioCount" -Severity Information -Category 'Remux'
+                Write-Log "  Субтитры: оригинал=$originalSubsCount, существующий=$existingSubsCount" -Severity Information -Category 'Remux'
+                
+                if ($originalVideoCount -eq $existingVideoCount -and 
+                    $originalAudioCount -eq $existingAudioCount -and 
+                    $originalSubsCount -eq $existingSubsCount) {
+                    
+                    Write-Log "Существующий файл прошел проверку! Используем его." -Severity Success -Category 'Remux'
+                    
+                    # Проверяем качество файла через Test-RemuxResult
+                    $result = Test-RemuxResult -OutputFile $OutputFile -OriginalInfo $originalInfo
+                    
+                    if ($result -eq $OutputFile) {
+                        Write-Log "Файл $([System.IO.Path]::GetFileName($OutputFile)) уже обработан и готов к использованию" `
+                            -Severity Success -Category 'Remux'
+                        return $OutputFile
+                    } else {
+                        Write-Log "Файл не прошел проверку качества, выполняем ремукс заново" -Severity Warning -Category 'Remux'
+                    }
+                } else {
+                    Write-Log "Количество дорожек не совпадает, выполняем ремукс заново" -Severity Warning -Category 'Remux'
+                }
+            } else {
+                Write-Log "Существующий файл поврежден или не читается, выполняем ремукс" -Severity Warning -Category 'Remux'
+            }
+        }
+        
+        # ============================================
+        # ВТОРОЙ ЭТАП: ВЫПОЛНЕНИЕ РЕМУКСА
+        # ============================================
+        
         # Создаем временную директорию
         $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "mkv_remux_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
         New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
@@ -39,7 +95,7 @@ function Convert-ToMKVUniversal {
         
         # 2. Обрабатываем вложения/обложки
         $attachments = Get-Attachments -InputFile $InputFile -FileInfo $fileInfo -TempDir $tempDir
-        $tempFiles.AddRange($attachments.Files)
+        if ($attachments.Files.Count -gt 0) { $tempFiles.AddRange($attachments.Files) }
         
         # 3. Извлекаем главы (если есть)
         $chaptersFile = Get-Chapters -InputFile $InputFile -InputExtension $inputExtension -TempDir $tempDir
@@ -49,7 +105,7 @@ function Convert-ToMKVUniversal {
         Invoke-MainContentRemux -InputFile $InputFile -OutputFile $OutputFile -FileInfo $fileInfo
         
         # 5. Добавляем вложения через mkvpropedit
-        if ($attachments.Count -gt 0 -and (Test-Path -LiteralPath $OutputFile)) {
+        if ($attachments.Files.Count -gt 0 -and (Test-Path -LiteralPath $OutputFile)) {
             Add-AttachmentsToMKV -OutputFile $OutputFile -Attachments $attachments
         }
         
@@ -100,9 +156,7 @@ function Get-VideoFileInfo {
         })
     }
     
-    Write-Log "Обнаружено: $($streamsByType.Video.Count) видео, $($streamsByType.Audio.Count) аудио, " +
-            "$($streamsByType.Subtitles.Count) субтитров, $($streamsByType.Attachments.Count) вложений" 
-            -Severity Information -Category 'Remux'
+    Write-Log "Обнаружено: $($streamsByType.Video.Count) видео, $($streamsByType.Audio.Count) аудио, $($streamsByType.Subtitles.Count) субтитров, $($streamsByType.Attachments.Count) вложений" -Severity Information -Category 'Remux'
     
     return @{
         Streams = $streamsByType
@@ -181,7 +235,7 @@ function Get-Chapters {
     )
     
     # Извлекаем главы только для форматов, которые их поддерживают
-    if ($inputExtension -notin @('.mp4', '.m4v', '.mov', '.mkv')) {
+    if ($inputExtension -notin @('.mp4', '.m4v', '.mov', '.mkv', '.mpls')) {
         return $null
     }
     
@@ -273,7 +327,7 @@ function Invoke-MainContentRemux {
     Write-Log "Выполнение: ffmpeg $($ffmpegArgs -join ' ')" -Severity Debug -Category 'Remux'
     
     $timer = [System.Diagnostics.Stopwatch]::StartNew()
-    & $global:VideoTools.FFmpeg @ffmpegArgs
+    & $global:VideoTools.FFmpeg @ffmpegArgs 2>&1 | Out-Null
     $timer.Stop()
     
     if ($LASTEXITCODE -ne 0) {
@@ -368,7 +422,7 @@ function Test-RemuxResult {
     }
     
     $outputSize = (Get-Item -LiteralPath $OutputFile).Length / 1MB
-    Write-Log "Ремукс завершен - Размер: {0:N2} MB" -f $outputSize -Severity Success -Category 'Remux'
+    Write-Log ("Ремукс завершен - Размер: {0:N2} MB" -f $outputSize) -Severity Success -Category 'Remux'
     
     # Проверяем содержимое полученного файла
     try {
@@ -424,7 +478,7 @@ function Get-SupportedVideoFormats {
     return @(
         '.mkv', '.mp4', '.avi', '.mov', '.mpg', '.mpeg', 
         '.wmv', '.flv', '.m4v', '.ts', '.m2ts', '.vob',
-        '.ogv', '.webm', '.rmvb', '.divx', '.xvid'
+        '.ogv', '.webm', '.rmvb', '.divx', '.xvid', '.mpls'
     )
 }
 

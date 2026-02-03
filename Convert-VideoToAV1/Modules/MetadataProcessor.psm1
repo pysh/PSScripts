@@ -79,6 +79,9 @@ function Complete-MediaFile {
         # Добавление обложки
         Add-CoverToMKV -Job $Job
         
+        # Добавление тега EncoderParams
+        Add-EncoderParamsTag -Job $Job
+        
         Write-Log "Файл успешно создан: $($Job.FinalOutput)" -Severity Success -Category 'Muxing'
     }
     catch {
@@ -539,7 +542,9 @@ function Build-SubtitleTrackArgs {
     [CmdletBinding()]
     param([object]$SubTrack)
     
-    $mkvMergeArgs = @('--language', "0:$($subTrack.Language)")
+    if ($subTrack.Language) {
+        $mkvMergeArgs += @('--language', "0:$($subTrack.Language)")
+    }
     
     if ($subTrack.Name) {
         $mkvMergeArgs += @('--track-name', "0:$($subTrack.Name)")
@@ -860,6 +865,89 @@ function ConvertFrom-NfoToTagsXml {
     }
     
     return $fields
+}
+
+function Add-EncoderParamsTag {
+    <#
+    .SYNOPSIS
+        Добавляет тег EncoderParams с параметрами кодирования в MKV файл
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Job)
+    
+    try {
+        # Подготавливаем параметры энкодера для записи в тег
+        $encoderParamsForTag = @{
+            Encoder = $Job.Encoder
+            EncoderName = $Job.Encoder
+            EncoderPath = if ($Job.EncoderPath) { [System.IO.Path]::GetFileName($Job.EncoderPath) } else { 'unknown' }
+            EncoderParams = $Job.EncoderParams
+            DateEncoded = [DateTime]::Now.ToString("yyyy-MM-dd HH:mm:ss")
+            Quality = if ($Job.Quality) { $Job.Quality } else { 'N/A' }
+        }
+        
+        # Конвертируем в JSON со сжатием (убираем пробелы и переводы строк)
+        $jsonParams = $encoderParamsForTag | ConvertTo-Json -Compress -Depth 3
+        
+        # Ограничиваем длину JSON (некоторые теговые системы имеют ограничения)
+        if ($jsonParams.Length -gt 8000) {
+            # Если слишком длинный, оставляем только основные параметры
+            $simpleParams = @{
+                Encoder = $Job.Encoder
+                EncoderParams = $Job.EncoderParams
+                DateEncoded = $encoderParamsForTag.DateEncoded
+            }
+            $jsonParams = $simpleParams | ConvertTo-Json -Compress -Depth 2
+        }
+        
+        Write-Log "Добавление тега EncoderParams ($($jsonParams.Length) символов)" -Severity Information -Category 'Muxing'
+        Write-Verbose "EncoderParams JSON: $jsonParams"
+        
+        # Создаем временный XML файл с тегами
+        $tempTagsFile = Join-Path -Path $Job.Metadata.TempDir -ChildPath "encoder_params.xml"
+        
+        # Формируем XML для mkvpropedit
+        $xmlContent = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE Tags SYSTEM "matroskatags.dtd">
+<Tags>
+  <Tag>
+    <Targets>
+      <TargetTypeValue>50</TargetTypeValue>
+    </Targets>
+    <Simple>
+      <Name>ENCODERPARAMS</Name>
+      <String>$([Security.SecurityElement]::Escape($jsonParams))</String>
+    </Simple>
+  </Tag>
+</Tags>
+"@
+        
+        Set-Content -LiteralPath $tempTagsFile -Value $xmlContent -Encoding UTF8
+        
+        # Добавляем тег через mkvpropedit
+        $mkvpropeditArgs = @(
+            $Job.FinalOutput,
+            '--tags', "global:$tempTagsFile"
+        )
+        
+        Write-Debug "mkvpropedit $($mkvpropeditArgs -join ' ')"
+        # & $global:VideoTools.MkvPropedit @mkvpropeditArgs
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log "Предупреждение: не удалось добавить тег EncoderParams (код $LASTEXITCODE)" `
+                -Severity Warning -Category 'Muxing'
+        } else {
+            Write-Log "Тег EncoderParams успешно добавлен" -Severity Success -Category 'Muxing'
+            
+            # Добавляем файл тегов в список временных файлов
+            $Job.TempFiles.Add($tempTagsFile)
+        }
+    }
+    catch {
+        Write-Log "Ошибка при добавлении тега EncoderParams: $_" -Severity Warning -Category 'Muxing'
+        # Не бросаем исключение, так как это дополнительная информация
+    }
 }
 
 # ============================================

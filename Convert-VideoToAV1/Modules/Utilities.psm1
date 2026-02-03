@@ -271,7 +271,6 @@ function Get-VideoQualityMetrics {
         Get-ScriptFrameRate -ScriptPath $DistortedPath -ScriptType $distortedType
     }
     
-    # ... остальной код функции остается без изменений ...
     # Базовые фильтры для временных меток
     $baseFilters = "settb=AVTB,setpts=PTS-STARTPTS"
 
@@ -459,8 +458,7 @@ function Get-VideoQualityMetrics {
         ModelVersion  = $ModelVersion
         VMAFTimer     = $timerVMAF
         XPSNRTimer    = $timerXPSNR
-    }    
-    # (полная версия функции, но без цветовых маппингов)
+    }
     
     return [PSCustomObject]$results
 }
@@ -553,144 +551,6 @@ function Get-VideoCropParameters {
     }
 }
 
-function Get-VideoAutoCropParams {
-    <#
-    .SYNOPSIS
-        Определяет параметры автоматической обрезки
-    #>
-    param (
-        [Parameter(Mandatory = $true)]
-        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
-        [string]$InputFile,
-
-        [Parameter(Mandatory = $false)]
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$ThresholdBegin = 0,
-
-        [Parameter(Mandatory = $false)]
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$ThresholdEnd = 0,
-
-        [Parameter(Mandatory = $false)]
-        [ValidateRange(0, [int]::MaxValue)]
-        [int]$LuminanceThreshold = 1000,
-
-        [Parameter(Mandatory = $false)]
-        [ValidateSet(2, 4, 8, 16, 32)]
-        [int]$Round = 2
-    )
-    
-    function RoundToNearestMultiple {
-        param([int]$Value, [int]$Multiple)
-        if ($Multiple -eq 0) { return $Value }
-        return [Math]::Round($Value / $Multiple) * $Multiple
-    }
-
-    $tmpScriptFile = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), 'vpy')
-    
-    @"
-import vapoursynth as vs
-core = vs.core
-
-# Constants for better readability
-MATRIX = {
-    'RGB': 0,
-    'BT709': 1,
-    'UNSPEC': 2,
-    'BT470BG': 5,
-    'BT2020_NCL': 9
-}
-
-TRANSFER = {
-    'BT709': 1,
-    'BT470BG': 5,
-    'ST2084': 16
-}
-
-PRIMARIES = {
-    'BT709': 1,
-    'BT470BG': 5,
-    'BT2020': 9
-}
-
-# Load source
-clip = core.lsmas.LWLibavSource(r"$InputFile")
-
-# Get frame properties
-props = clip.get_frame(0).props
-
-# Determine matrix, transfer and primaries
-matrix = props.get('_Matrix', MATRIX['UNSPEC'])
-if matrix == MATRIX['UNSPEC'] or matrix >= 15:
-    matrix = MATRIX['RGB'] if clip.format.id == vs.RGB24 else (
-        MATRIX['BT709'] if clip.height > 576 else MATRIX['BT470BG']
-    )
-
-transfer = props.get('_Transfer', TRANSFER['BT709'])
-if transfer <= 0 or transfer >= 19:
-    transfer = (
-        TRANSFER['BT470BG'] if matrix == MATRIX['BT470BG'] else
-        TRANSFER['ST2084'] if matrix == MATRIX['BT2020_NCL'] else
-        TRANSFER['BT709']
-    )
-
-primaries = props.get('_Primaries', PRIMARIES['BT709'])
-if primaries <= 0 or primaries >= 23:
-    primaries = (
-        PRIMARIES['BT470BG'] if matrix == MATRIX['BT470BG'] else
-        PRIMARIES['BT2020'] if matrix == MATRIX['BT2020_NCL'] else
-        PRIMARIES['BT709']
-    )
-
-# Process video
-clip = clip.resize.Bicubic(
-    matrix_in=matrix,
-    transfer_in=transfer,
-    primaries_in=primaries,
-    format=vs.RGB24
-)
-clip = clip.libp2p.Pack()
-clip.set_output()
-"@ | Set-Content -Path $tmpScriptFile -Force
-
-    $AutoCropPath = 'X:\Apps\_VideoEncoding\StaxRip\Apps\Support\AutoCrop\AutoCrop.exe'
-    $acFrameCount = 2
-    $acFrameInterval = 400
-    
-    try {
-        $autocropOutput = & $AutoCropPath $tmpScriptFile $acFrameCount $acFrameInterval 144 144 $LuminanceThreshold 0
-        
-        # Получаем последнюю строку вывода (с параметрами обрезки)
-        $cropLine = $autocropOutput | Select-Object -Last 1
-        
-        # Разбиваем строку по запятым и преобразуем в числа
-        $cropParams = $cropLine -split ',' | ForEach-Object { [int]$_ }
-
-        # Округляем значения до кратных $Round
-        $roundedLeft = RoundToNearestMultiple -Value $cropParams[0] -Multiple $Round
-        $roundedTop = RoundToNearestMultiple -Value $cropParams[1] -Multiple $Round
-        $roundedRight = RoundToNearestMultiple -Value $cropParams[2] -Multiple $Round
-        $roundedBottom = RoundToNearestMultiple -Value $cropParams[3] -Multiple $Round
-
-        # Создаем объект с параметрами обрезки
-        return [PSCustomObject]@{
-            Left           = $roundedLeft
-            Top            = $roundedTop
-            Right          = $roundedRight
-            Bottom         = $roundedBottom
-            OriginalLeft   = $cropParams[0]
-            OriginalTop    = $cropParams[1]
-            OriginalRight  = $cropParams[2]
-            OriginalBottom = $cropParams[3]
-        }
-    }
-    finally {
-        if (Test-Path -LiteralPath $tmpScriptFile) {
-            Remove-Item -LiteralPath $tmpScriptFile -ErrorAction SilentlyContinue
-        }
-    }
-}
-
 function Get-SafeFileName {
     <#
     .SYNOPSIS
@@ -715,11 +575,14 @@ function Get-EncoderPath {
     param([Parameter(Mandatory)][string]$EncoderName)
     
     try {
-        if (-not $global:Config.Encoding.AvailableEncoders.ContainsKey($EncoderName)) {
-            throw "Энкодер '$EncoderName' не найден в конфигурации"
+        # Получаем базовое имя энкодера
+        $baseEncoder = $EncoderName -split '\.' | Select-Object -First 1
+        
+        if (-not $global:Config.Encoding.AvailableEncoders.ContainsKey($baseEncoder)) {
+            throw "Энкодер '$baseEncoder' не найден в AvailableEncoders"
         }
         
-        $encoderPathRef = $global:Config.Encoding.AvailableEncoders[$EncoderName]
+        $encoderPathRef = $global:Config.Encoding.AvailableEncoders[$baseEncoder]
         $pathParts = $encoderPathRef -split '\.'
         
         $current = $global:Config
@@ -743,35 +606,97 @@ function Get-EncoderConfig {
     <#
     .SYNOPSIS
         Получает конфигурацию для указанного энкодера
+    .DESCRIPTION
+        Поддерживает форматы: 'encoder' или 'encoder.preset'
+        Примеры: 'x265', 'x265.film_grain', 'SvtAv1EncESS.grain_optimized'
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$EncoderName)
+    param(
+        [Parameter(Mandatory)]
+        [string]$EncoderName
+    )
     
     try {
-        # Проверяем наличие пресета в конфиге
-        if (-not $global:Config.Encoding.Video.EncoderParams.ContainsKey($EncoderName)) {
-            Write-Log "Конфигурация для энкодера '$EncoderName' не найдена. Поиск пресетов..." `
-                -Severity Warning -Category 'Config'
-            
-            # Ищем пресеты по шаблону (например, SvtAv1EncESS_*)
-            $presetPattern = $EncoderName -replace '_.*$', '*'
-            $matchingPresets = $global:Config.Encoding.Video.EncoderParams.Keys | Where-Object { $_ -like $presetPattern }
-            
-            if ($matchingPresets.Count -eq 0) {
-                throw "Конфигурация для энкодера '$EncoderName' не найдена и подходящих пресетов не обнаружено"
-            }
-            
-            # Используем первый найденный пресет
-            $fallbackEncoder = $matchingPresets[0]
-            Write-Log "Используется пресет '$fallbackEncoder' для '$EncoderName'" -Severity Information -Category 'Config'
-            return $global:Config.Encoding.Video.EncoderParams[$fallbackEncoder]
+        # Разбираем имя энкодера (может быть 'encoder.preset')
+        $encoderParts = $EncoderName -split '\.'
+        $baseEncoder = $encoderParts[0]
+        $presetName = if ($encoderParts.Count -gt 1) { $encoderParts[1] } else { 'main' }
+        
+        # Проверяем наличие энкодера в пресетах
+        if (-not $global:Config.Encoding.Video.EncoderPresets.ContainsKey($baseEncoder)) {
+            throw "Энкодер '$baseEncoder' не найден в конфигурации пресетов"
         }
         
-        return $global:Config.Encoding.Video.EncoderParams[$EncoderName]
+        $encoderPresets = $global:Config.Encoding.Video.EncoderPresets[$baseEncoder]
+        
+        # Получаем пресет
+        if (-not $encoderPresets.ContainsKey($presetName)) {
+            # Если указанного пресета нет, берем первый доступный
+            $availablePresets = $encoderPresets.Keys
+            if ($availablePresets.Count -eq 0) {
+                throw "Нет доступных пресетов для энкодера '$baseEncoder'"
+            }
+            $presetName = $availablePresets[0]
+            Write-Log "Пресет '$presetName' не найден, используется '$presetName'" `
+                -Severity Warning -Category 'Config'
+        }
+        
+        $presetConfig = $encoderPresets[$presetName].Clone()
+        
+        # Добавляем информацию о пресете
+        $presetConfig['PresetName'] = $presetName
+        $presetConfig['BaseEncoder'] = $baseEncoder
+        $presetConfig['FullEncoderName'] = $EncoderName
+        
+        return $presetConfig
     }
     catch {
-        Write-Log "Ошибка получения конфигурации энкодера '$EncoderName': $_" -Severity Error -Category 'Config'
+        Write-Log "Ошибка получения конфигурации энкодера '$EncoderName': $_" `
+            -Severity Error -Category 'Config'
         throw
+    }
+}
+
+function Get-EncoderCode {
+    <#
+    .SYNOPSIS
+        Получает короткий код энкодера для использования в именах файлов
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$EncoderName
+    )
+    
+    try {
+        # Сначала проверяем, есть ли код в EncoderCodes
+        if ($global:Config.Encoding.EncoderCodes.ContainsKey($EncoderName)) {
+            return $global:Config.Encoding.EncoderCodes[$EncoderName]
+        }
+        
+        # Если нет, получаем конфиг и проверяем там
+        $encoderConfig = Get-EncoderConfig -EncoderName $EncoderName -ErrorAction SilentlyContinue
+        
+        if ($encoderConfig -and $encoderConfig.CodecCode) {
+            return $encoderConfig.CodecCode
+        }
+        
+        # Определяем код по имени энкодера
+        $baseEncoder = $EncoderName -split '\.' | Select-Object -First 1
+        
+        switch -Wildcard ($baseEncoder) {
+            '*265*'   { 'hevc' }
+            '*av1*'   { 'av1' }
+            '*av1enc*'{ 'av1' }
+            '*vp9*'   { 'vp9' }
+            '*h264*'  { 'h264' }
+            default   { 'enc' }  # fallback
+        }
+    }
+    catch {
+        Write-Log "Не удалось определить код энкодера '$EncoderName': $_" `
+            -Severity Warning -Category 'Config'
+        return 'enc'
     }
 }
 
@@ -793,13 +718,7 @@ function Get-EncoderParams {
     }
     
     # Определяем базовое имя энкодера для свитча
-    $baseEncoderName = if ($EncoderName -match '^(SvtAv1EncESS|SvtAv1Enc|SvtAv1EncHDR|SvtAv1EncPSYEX)') {
-        $matches[1]
-    } elseif ($EncoderName -match '^(x265|Rav1eEnc|AomAv1Enc)') {
-        $matches[1]
-    } else {
-        $EncoderName
-    }
+    $baseEncoderName = $EncoderConfig.BaseEncoder ?? ($EncoderName -split '\.' | Select-Object -First 1)
 
     # Добавляем специфичные параметры для каждого энкодера
     switch ($baseEncoderName) {
@@ -835,6 +754,9 @@ function Get-EncoderParams {
             $baseParams += @('--cq-level', $EncoderConfig.Quality)
             $baseParams += @('--cpu-used', $EncoderConfig.CpuUsed)
         }
+        default {
+            Write-Log "Неизвестный базовый энкодер: $baseEncoderName" -Severity Warning -Category 'Config'
+        }
     }
     
     # Добавляем дополнительные параметры
@@ -847,50 +769,112 @@ function Get-EncoderParams {
 function Test-EncoderPreset {
     <#
     .SYNOPSIS
-        Проверяет доступность и конфигурацию пресета энкодера
+        Проверяет доступность и конфигурацию энкодера/пресета
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$EncoderName,
+        [Parameter(Mandatory)]
+        [string]$EncoderName,
+        
         [switch]$VerboseInfo
     )
     
     try {
-        $availableEncoders = $global:Config.Encoding.AvailableEncoders.Keys
-        $presets = $global:Config.Encoding.Video.EncoderParams.Keys
+        # Разбираем имя энкодера
+        $encoderParts = $EncoderName -split '\.'
+        $baseEncoder = $encoderParts[0]
+        $presetName = if ($encoderParts.Count -gt 1) { $encoderParts[1] } else { 'main' }
         
         $result = @{
             EncoderName = $EncoderName
-            IsAvailableEncoder = $EncoderName -in $availableEncoders
-            IsPreset = $EncoderName -in $presets
-            HasConfig = $global:Config.Encoding.Video.EncoderParams.ContainsKey($EncoderName)
-            BaseEncoder = $null
+            BaseEncoder = $baseEncoder
+            PresetName = $presetName
+            IsAvailable = $false
+            HasConfig = $false
             Config = $null
         }
         
-        if ($result.HasConfig) {
-            $result.Config = $global:Config.Encoding.Video.EncoderParams[$EncoderName]
+        # Проверяем наличие базового энкодера
+        if ($global:Config.Encoding.Video.EncoderPresets.ContainsKey($baseEncoder)) {
+            $encoderPresets = $global:Config.Encoding.Video.EncoderPresets[$baseEncoder]
+            $result.IsAvailable = $true
             
-            # Определяем базовый энкодер
-            if ($EncoderName -match '^(SvtAv1EncESS|SvtAv1Enc|SvtAv1EncHDR|SvtAv1EncPSYEX)') {
-                $result.BaseEncoder = $matches[1]
+            # Проверяем наличие пресета
+            if ($encoderPresets.ContainsKey($presetName)) {
+                $result.HasConfig = $true
+                $result.Config = $encoderPresets[$presetName]
             }
         }
         
         if ($VerboseInfo) {
-            Write-Log "Проверка пресета '$EncoderName':" -Severity Information
-            Write-Log "  Доступный энкодер: $($result.IsAvailableEncoder)" -Severity Information
-            Write-Log "  Пресет: $($result.IsPreset)" -Severity Information
-            Write-Log "  Есть конфиг: $($result.HasConfig)" -Severity Information
+            Write-Log "Проверка энкодера '$EncoderName':" -Severity Information
             Write-Log "  Базовый энкодер: $($result.BaseEncoder)" -Severity Information
+            Write-Log "  Пресет: $($result.PresetName)" -Severity Information
+            Write-Log "  Доступен: $($result.IsAvailable)" -Severity Information
+            Write-Log "  Есть конфиг: $($result.HasConfig)" -Severity Information
+            if ($result.Config) {
+                Write-Log "  DisplayName: $($result.Config.DisplayName)" -Severity Information
+                Write-Log "  CodecCode: $($result.Config.CodecCode)" -Severity Information
+            }
         }
         
         return [PSCustomObject]$result
     }
     catch {
-        Write-Log "Ошибка проверки пресета: $_" -Severity Error
+        Write-Log "Ошибка проверки энкодера: $_" -Severity Error
         throw
     }
+}
+
+function Get-AvailableEncoders {
+    <#
+    .SYNOPSIS
+        Возвращает список всех доступных энкодеров и пресетов
+    .EXAMPLE
+        Get-AvailableEncoders
+    .EXAMPLE
+        Get-AvailableEncoders -Format "Display"
+    #>
+    [CmdletBinding()]
+    param(
+        [ValidateSet("Simple", "Display", "Full")]
+        [string]$Format = "Simple"
+    )
+    
+    $result = @()
+    
+    foreach ($encoderKey in $global:Config.Encoding.Video.EncoderPresets.Keys) {
+        $encoderPresets = $global:Config.Encoding.Video.EncoderPresets[$encoderKey]
+        
+        foreach ($presetKey in $encoderPresets.Keys) {
+            $preset = $encoderPresets[$presetKey]
+            
+            switch ($Format) {
+                "Simple" {
+                    $result += "${encoderKey}.${presetKey}"
+                }
+                "Display" {
+                    $displayName = $preset.DisplayName ?? $presetKey
+                    $result += [PSCustomObject]@{
+                        FullName = "${encoderKey}.${presetKey}"
+                        DisplayName = $displayName
+                        Encoder = $encoderKey
+                        Preset = $presetKey
+                    }
+                }
+                "Full" {
+                    $result += [PSCustomObject]@{
+                        FullName = "${encoderKey}.${presetKey}"
+                        Encoder = $encoderKey
+                        Preset = $presetKey
+                        Config = $preset
+                    }
+                }
+            }
+        }
+    }
+    
+    return $result
 }
 
 function Get-VideoStats {
@@ -1175,16 +1159,10 @@ function Get-ScriptFrameRate {
     }
     
     # Возвращаем значение по умолчанию
-    return 24.0
+    return 25.0
 }
 
-
-
-
-
-
-
-# Онлайн-перевод (оставляем, так как могут пригодиться)
+# Онлайн-перевод
 function Invoke-MyMemoryTranslate {
     param(
         [Parameter(Mandatory = $true)]
@@ -1290,7 +1268,6 @@ function Invoke-FreeTranslate {
     return $null
 }
 
-
 # Экспорт функций
 Export-ModuleMember -Function `
     Initialize-Configuration, `
@@ -1301,11 +1278,13 @@ Export-ModuleMember -Function `
     Get-EncoderPath, `
     Get-EncoderParams, `
     Get-EncoderConfig, `
+    Get-EncoderCode, `
+    Test-EncoderPreset, `
+    Get-AvailableEncoders, `
     Get-VideoQualityMetrics, `
     Get-VideoScriptInfo, `
     Get-VideoCropParameters, `
     Convert-FpsToDouble, `
-    Test-EncoderPreset, `
     Copy-VideoFragments, `
     Get-VideoStats, `
     Get-VideoAutoCropParams, `
